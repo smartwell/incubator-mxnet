@@ -1,19 +1,22 @@
-<!--- Licensed to the Apache Software Foundation (ASF) under one -->
-<!--- or more contributor license agreements.  See the NOTICE file -->
-<!--- distributed with this work for additional information -->
-<!--- regarding copyright ownership.  The ASF licenses this file -->
-<!--- to you under the Apache License, Version 2.0 (the -->
-<!--- "License"); you may not use this file except in compliance -->
-<!--- with the License.  You may obtain a copy of the License at -->
-
-<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
-
-<!--- Unless required by applicable law or agreed to in writing, -->
-<!--- software distributed under the License is distributed on an -->
-<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
-<!--- KIND, either express or implied.  See the License for the -->
-<!--- specific language governing permissions and limitations -->
-<!--- under the License. -->
+<!--
+  ~ Licensed to the Apache Software Foundation (ASF) under one
+  ~ or more contributor license agreements.  See the NOTICE file
+  ~ distributed with this work for additional information
+  ~ regarding copyright ownership.  The ASF licenses this file
+  ~ to you under the Apache License, Version 2.0 (the
+  ~ "License"); you may not use this file except in compliance
+  ~ with the License.  You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing,
+  ~ software distributed under the License is distributed on an
+  ~ "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  ~ KIND, either express or implied.  See the License for the
+  ~ specific language governing permissions and limitations
+  ~ under the License.
+  ~
+-->
 
 # Testing MXNET
 
@@ -27,7 +30,7 @@
     ```
 1. Generate your Makefile and build along with the tests with cmake (specify appropraite flags)
     ```
-    cmake -DUSE_CUDNN=ON -DUSE_CUDA=ON -DUSE_MKLDNN=ON -DBLAS=Open -DCMAKE_BUILD_TYPE=Debug .. && make
+    cmake -DUSE_CUDNN=ON -DUSE_CUDA=ON -DUSE_ONEDNN=ON -DUSE_BLAS=Open -DCMAKE_BUILD_TYPE=Debug .. && make
     ```
 1.  Run tests
     ```
@@ -53,7 +56,7 @@ Ninja is a build tool (like make) that prioritizes building speed. If you will b
     ```
 1. When running cmake, add the `-GNinja` flag to specify cmake to generate a Ninja build file
     ```
-    cmake -DUSE_CUDNN=ON -DUSE_CUDA=ON -DUSE_MKLDNN=ON -DBLAS=Open -GNinja -DCMAKE_BUILD_TYPE=Debug ..
+    cmake -DUSE_CUDNN=ON -DUSE_CUDA=ON -DUSE_ONEDNN=ON -DUSE_BLAS=Open -GNinja -DCMAKE_BUILD_TYPE=Debug ..
     ```
 1. Run the ninja build file with
     ```
@@ -62,14 +65,21 @@ Ninja is a build tool (like make) that prioritizes building speed. If you will b
     
 ## Runing Python Tests Within Docker
 
-1. To run tests inside docker run the following comamdn
-    ```
-    ci/build.py --platform {PLATFORM} /work/runtime_functions.sh {RUNTIME_FUNCTION}
-    ```
-An example for running python tests would be
+To run tests inside docker, you first need to install `docker` and `docker-compose` on your machine.
+
+On Ubuntu you may install them via `sudo apt-get install docker.io docker-compose python3-docker`
+and set them up via `sudo usermod $(whoami) -G docker -a`.
+
+Then, to run tests inside docker run the following command
+
 ```
-ci/build.py --platform build_ubuntu_cpu_mkldnn /work/runtime_functions.sh unittest_ubuntu_python3_cpu PYTHONPATH=./python/ nosetests-2.7 tests/python/unittest
+ci/build.py --platform {PLATFORM} /work/runtime_functions.sh {RUNTIME_FUNCTION}
 ```
 
+An example for running python tests on Ubuntu with a CPU would be
 
+```
+ci/build.py --platform ubuntu_cpu /work/runtime_functions.sh unittest_ubuntu_python3_cpu
+```
 
+See [Continuous Integration](../ci/README.md)

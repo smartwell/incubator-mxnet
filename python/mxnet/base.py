@@ -18,8 +18,8 @@
 # coding: utf-8
 # pylint: disable=invalid-name, no-member, trailing-comma-tuple, bad-mcs-classmethod-argument, unnecessary-pass, too-many-lines, wrong-import-position
 """ctypes library of mxnet and helper functions."""
-from __future__ import absolute_import
 
+import re
 import atexit
 import ctypes
 import os
@@ -47,13 +47,18 @@ except NameError:
 integer_types = (int, long, _np.int32, _np.int64)
 numeric_types = (float, int, long, _np.generic)
 string_types = basestring,
+error_types = {}
 
-if sys.version_info[0] > 2:
-    # this function is needed for python3
-    # to convert ctypes.char_p .value back to python str
-    py_str = lambda x: x.decode('utf-8')
-else:
-    py_str = lambda x: x
+# Upper bound of uint64
+_MAX_VALUE_64_BIT_SIGNED_ = 9_223_372_036_854_775_807
+# Upper bound of int64
+_MAX_VALUE_64_BIT_UNSIGNED_ = 18_446_744_073_709_551_615
+# Upper bound of float32
+_MAX_VALUE_FLOAT32_REPRESENT_ = 16_777_216
+
+# this function is needed for python3
+# to convert ctypes.char_p .value back to python str
+py_str = lambda x: x.decode('utf-8')
 
 
 def data_dir_default():
@@ -85,11 +90,121 @@ class _NullType(object):
 _Null = _NullType()
 
 
-class MXNetError(Exception):
-    """Error that will be thrown by all mxnet functions."""
-    pass
+class MXNetError(RuntimeError):
+    """Default error thrown by MXNet functions.
+
+    MXNetError will be raised if you do not give any error type specification,
+    """
+
+def register_error(func_name=None, cls=None):
+    """Register an error class so it can be recognized by the ffi error handler.
+
+    Parameters
+    ----------
+    func_name : str or function or class
+        The name of the error function.
+
+    cls : function
+        The function to create the class
+
+    Returns
+    -------
+    fregister : function
+        Register function if f is not specified.
+
+    Examples
+    --------
+    .. code-block:: python
+
+      @mxnet.error.register_error
+      class MyError(RuntimeError):
+          pass
+
+      err_inst = mxnet.error.create_ffi_error("MyError: xyz")
+      assert isinstance(err_inst, MyError)
+    """
+    if callable(func_name):
+        cls = func_name
+        func_name = cls.__name__
+
+    def register(mycls):
+        """internal register function"""
+        err_name = func_name if isinstance(func_name, str) else mycls.__name__
+        error_types[err_name] = mycls
+        return mycls
+    if cls is None:
+        return register
+    return register(cls)
 
 
+def _valid_error_name(name):
+    """Check whether name is a valid error name."""
+    return all(x.isalnum() or x in "_." for x in name)
+
+
+def _find_error_type(line):
+    """Find the error name given the first line of the error message.
+
+    Parameters
+    ----------
+    line : str
+        The first line of error message.
+
+    Returns
+    -------
+    name : str The error name
+    """
+    end_pos = line.find(":")
+    if end_pos == -1:
+        return None
+    err_name = line[:end_pos]
+    if _valid_error_name(err_name):
+        return err_name
+    return None
+
+
+def c2pyerror(err_msg):
+    """Translate C API error message to python style.
+
+    Parameters
+    ----------
+    err_msg : str
+        The error message.
+
+    Returns
+    -------
+    new_msg : str
+        Translated message.
+
+    err_type : str
+        Detected error type.
+    """
+    arr = err_msg.split("\n")
+    if arr[-1] == "":
+        arr.pop()
+    err_type = _find_error_type(arr[0])
+    trace_mode = False
+    stack_trace = []
+    message = []
+    for line in arr:
+        if trace_mode:
+            if line.startswith("  "):
+                stack_trace.append(line)
+            else:
+                trace_mode = False
+        if not trace_mode:
+            if line.startswith("Stack trace"):
+                trace_mode = True
+            else:
+                message.append(line)
+    out_msg = ""
+    if stack_trace:
+        out_msg += "Traceback (most recent call last):\n"
+        out_msg += "\n".join(reversed(stack_trace)) + "\n"
+    out_msg += "\n".join(message)
+    return out_msg, err_type
+
+@register_error
 class NotImplementedForSymbol(MXNetError):
     """Error: Not implemented for symbol"""
     def __init__(self, function, alias, *args):
@@ -106,6 +221,36 @@ class NotImplementedForSymbol(MXNetError):
             msg += ' with arguments ({})'.format(', '.join(self.args))
         msg += ' is not implemented for Symbol and only available in NDArray.'
         return msg
+
+
+def get_last_ffi_error():
+    """Create error object given result of MXGetLastError.
+
+    Returns
+    -------
+    err : object
+        The error object based on the err_msg
+    """
+    c_err_msg = py_str(_LIB.MXGetLastError())
+    py_err_msg, err_type = c2pyerror(c_err_msg)
+    if err_type is not None and err_type.startswith("mxnet.error."):
+        err_type = err_type[10:]
+    return error_types.get(err_type, MXNetError)(py_err_msg)
+
+
+def check_call(ret):
+    """Check the return value of C API call.
+
+    This function will raise an exception when an error occurs.
+    Wrap every API call with this function.
+
+    Parameters
+    ----------
+    ret : int
+        return value from API calls.
+    """
+    if ret != 0:
+        raise get_last_ffi_error()
 
 
 class NotSupportedForSparseNDArray(MXNetError):
@@ -135,76 +280,37 @@ class MXCallbackList(ctypes.Structure):
         ]
 
 
-# Please see: https://stackoverflow.com/questions/5189699/how-to-make-a-class-property
-class _MXClassPropertyDescriptor(object):
-    def __init__(self, fget, fset=None):
-        self.fget = fget
-        self.fset = fset
-
-    def __get__(self, obj, clas=None):
-        if clas is None:
-            clas = type(obj)
-        return self.fget.__get__(obj, clas)()
-
-    def __set__(self, obj, value):
-        if not self.fset:
-            raise MXNetError("cannot use the setter: %s to set attribute" % obj.__name__)
-        if inspect.isclass(obj):
-            type_ = obj
-            obj = None
-        else:
-            type_ = type(obj)
-        return self.fset.__get__(obj, type_)(value)
-
-    def setter(self, func):
-        if not isinstance(func, (classmethod, staticmethod)):
-            func = classmethod(func)
-        self.fset = func
-        return self
-
-
-class _MXClassPropertyMetaClass(type):
-    def __setattr__(cls, key, value):
-        obj = cls.__dict__.get(key)
-        if obj and isinstance(obj, _MXClassPropertyDescriptor):
-            return obj.__set__(cls, value)
-
-        return super(_MXClassPropertyMetaClass, cls).__setattr__(key, value)
-
-
-# with_metaclass function obtained from: https://github.com/benjaminp/six/blob/master/six.py
-# pylint: disable=unused-argument
-def with_metaclass(meta, *bases):
-    """Create a base class with a metaclass."""
-    # This requires a bit of explanation: the basic idea is to make a dummy
-    # metaclass for one level of class instantiation that replaces itself with
-    # the actual metaclass.
-    class metaclass(type):
-
-        def __new__(cls, name, this_bases, d):
-            return meta(name, bases, d)
-
-        @classmethod
-        def __prepare__(cls, name, this_bases):
-            return meta.__prepare__(name, bases)
-    return type.__new__(metaclass, 'temporary_class', (), {})
-# pylint: enable=unused-argument
-
-
-def classproperty(func):
-    if not isinstance(func, (classmethod, staticmethod)):
-        func = classmethod(func)
-
-    return _MXClassPropertyDescriptor(func)
-
-
+# pylint: disable=line-too-long
 def _load_lib():
     """Load library by searching possible path."""
     lib_path = libinfo.find_lib_path()
-    lib = ctypes.CDLL(lib_path[0], ctypes.RTLD_LOCAL)
-    # DMatrix functions
-    lib.MXGetLastError.restype = ctypes.c_char_p
-    return lib
+    try:
+        if sys.version_info >= (3, 8) and os.name == "nt":
+            # use LOAD_WITH_ALTERED_SEARCH_PATH, For simplicity, let's just fill the numbers.
+            # pylint: disable=E1123
+            lib = ctypes.CDLL(lib_path[0], winmode=0x00000008)
+        else:
+            lib = ctypes.CDLL(lib_path[0], ctypes.RTLD_LOCAL)
+        # DMatrix functions
+        lib.MXGetLastError.restype = ctypes.c_char_p
+    except OSError as e:
+        if "libcudnn" in e.args[0]:
+            e.args = (e.args[0]+'\nNotes: Starting from version 1.8.0, cuDNN and NCCL should be installed by users in advance. \
+                      \nPlease follow the instructions in https://docs.nvidia.com/deeplearning/cudnn/install-guide/index.html to install cuDNN.',)
+            raise OSError(e) from None
+        if "libnccl" in e.args[0]:
+            e.args = (e.args[0]+'\nNotes: Starting from version 1.8.0, cuDNN and NCCL should be installed by users in advance. \
+                      \nPlease follow the instructions in https://docs.nvidia.com/deeplearning/nccl/install-guide/index.html to install NCCL.',)
+            raise OSError(e) from None
+        if "libquadmath" in e.args[0]:
+            e.args = (e.args[0]+'\nNotes: As libquadmath.so.0 is a GPL library and MXNet part of the Apache Software Foundation, \
+                      \nMXNet must not redistribute libquadmath.so.0 as part of the Pypi package and users must manually install it. \
+                      \nOn Debian based systems, including Ubuntu, run sudo apt install libquadmath0 to install the shared library. \
+                      \nOn RHEL based systems, including CentOS, run sudo yum install libquadmath to install the shared library. ')
+            raise OSError(e) from None
+        raise
+    else:
+        return lib
 
 
 # version number
@@ -212,9 +318,12 @@ __version__ = libinfo.__version__
 # library instance of mxnet
 _LIB = _load_lib()
 
+check_call(_LIB.MXSetFlushDenorms(ctypes.c_bool(True),
+                                  ctypes.byref(ctypes.c_bool())))
 # type definitions
 mx_int = ctypes.c_int
 mx_uint = ctypes.c_uint
+mx_int64 = ctypes.c_int64
 mx_float = ctypes.c_float
 mx_float_p = ctypes.POINTER(mx_float)
 mx_real_t = _np.float32
@@ -223,113 +332,58 @@ FunctionHandle = ctypes.c_void_p
 OpHandle = ctypes.c_void_p
 CachedOpHandle = ctypes.c_void_p
 SymbolHandle = ctypes.c_void_p
-ExecutorHandle = ctypes.c_void_p
 DataIterCreatorHandle = ctypes.c_void_p
 DataIterHandle = ctypes.c_void_p
+DatasetHandle = ctypes.c_void_p
+BatchifyFunctionhandle = ctypes.c_void_p
 KVStoreHandle = ctypes.c_void_p
 RecordIOHandle = ctypes.c_void_p
 RtcHandle = ctypes.c_void_p
 CudaModuleHandle = ctypes.c_void_p
 CudaKernelHandle = ctypes.c_void_p
 ProfileHandle = ctypes.c_void_p
-DLPackHandle = ctypes.c_void_p
 
 
 #----------------------------
 # helper function definition
 #----------------------------
-def check_call(ret):
-    """Check the return value of C API call.
-
-    This function will raise an exception when an error occurs.
-    Wrap every API call with this function.
+def c_str(string):
+    """Create ctypes char * from a Python string.
 
     Parameters
     ----------
-    ret : int
-        return value from API calls.
+    string : string type
+        Python string.
+
+    Returns
+    -------
+    str : c_char_p
+        A char pointer that can be passed to C API.
+
+    Examples
+    --------
+    >>> x = mx.base.c_str("Hello, World")
+    >>> print(x.value)
+    b"Hello, World"
     """
-    if ret != 0:
-        raise MXNetError(py_str(_LIB.MXGetLastError()))
+    return ctypes.c_char_p(string.encode('utf-8'))
 
+def c_str_array(strings):
+    """Create ctypes const char ** from a list of Python strings.
 
-if sys.version_info[0] < 3:
-    def c_str(string):
-        """Create ctypes char * from a Python string.
+    Parameters
+    ----------
+    strings : list of string
+        Python strings.
 
-        Parameters
-        ----------
-        string : string type
-            Python string.
-
-        Returns
-        -------
-        str : c_char_p
-            A char pointer that can be passed to C API.
-
-        Examples
-        --------
-        >>> x = mx.base.c_str("Hello, World")
-        >>> print x.value
-        Hello, World
-        """
-        return ctypes.c_char_p(string)
-
-    def c_str_array(strings):
-        """Create ctypes const char ** from a list of Python strings.
-
-        Parameters
-        ----------
-        strings : list of string
-            Python strings.
-
-        Returns
-        -------
-        (ctypes.c_char_p * len(strings))
-            A const char ** pointer that can be passed to C API.
-        """
-        arr = (ctypes.c_char_p * len(strings))()
-        arr[:] = strings
-        return arr
-
-else:
-    def c_str(string):
-        """Create ctypes char * from a Python string.
-
-        Parameters
-        ----------
-        string : string type
-            Python string.
-
-        Returns
-        -------
-        str : c_char_p
-            A char pointer that can be passed to C API.
-
-        Examples
-        --------
-        >>> x = mx.base.c_str("Hello, World")
-        >>> print(x.value)
-        b"Hello, World"
-        """
-        return ctypes.c_char_p(string.encode('utf-8'))
-
-    def c_str_array(strings):
-        """Create ctypes const char ** from a list of Python strings.
-
-        Parameters
-        ----------
-        strings : list of string
-            Python strings.
-
-        Returns
-        -------
-        (ctypes.c_char_p * len(strings))
-            A const char ** pointer that can be passed to C API.
-        """
-        arr = (ctypes.c_char_p * len(strings))()
-        arr[:] = [s.encode('utf-8') for s in strings]
-        return arr
+    Returns
+    -------
+    (ctypes.c_char_p * len(strings))
+        A const char ** pointer that can be passed to C API.
+    """
+    arr = (ctypes.c_char_p * len(strings))()
+    arr[:] = [s.encode('utf-8') for s in strings]
+    return arr
 
 
 def c_array(ctype, values):
@@ -487,14 +541,14 @@ def build_param_doc(arg_names, arg_types, arg_descs, remove_dup=True):
         if key == 'num_args':
             continue
         param_keys.add(key)
-        ret = '%s : %s' % (key, type_info)
+        ret = f'{key} : {type_info}'
         if len(desc) != 0:
             ret += '\n    ' + desc
         param_str.append(ret)
     doc_str = ('Parameters\n' +
                '----------\n' +
-               '%s\n')
-    doc_str = doc_str % ('\n'.join(param_str))
+               '{}\n')
+    doc_str = doc_str.format('\n'.join(param_str))
     return doc_str
 
 
@@ -527,7 +581,7 @@ def add_fileline_to_docstring(module, incursive=True):
             line = inspect.getsourcelines(obj)[-1]
         except IOError:
             return
-        obj.__doc__ += '\n\nFrom:%s:%d' % (fname, line)
+        obj.__doc__ += f'\n\nFrom:{fname}:{line}'
 
     if isinstance(module, str):
         module = sys.modules[module]
@@ -602,17 +656,17 @@ def _init_op_module(root_namespace, module_name, make_op_func):
         if not _is_np_op(op_name):
             op_names.append(op_name)
 
-    module_op = sys.modules["%s.%s.op" % (root_namespace, module_name)]
-    module_internal = sys.modules["%s.%s._internal" % (root_namespace, module_name)]
+    module_op = sys.modules[f"{root_namespace}.{module_name}.op"]
+    module_internal = sys.modules[f"{root_namespace}.{module_name}._internal"]
     # contrib module in the old format (deprecated)
     # kept here for backward compatibility
     # use mx.nd.contrib or mx.sym.contrib from now on
-    contrib_module_name_old = "%s.contrib.%s" % (root_namespace, module_name)
+    contrib_module_name_old = f"{root_namespace}.contrib.{module_name}"
     contrib_module_old = sys.modules[contrib_module_name_old]
     submodule_dict = {}
     for op_name_prefix in _OP_NAME_PREFIX_LIST:
         submodule_dict[op_name_prefix] =\
-            sys.modules["%s.%s.%s" % (root_namespace, module_name, op_name_prefix[1:-1])]
+            sys.modules[f"{root_namespace}.{module_name}.{op_name_prefix[1:-1]}"]
     for name in op_names:
         hdl = OpHandle()
         check_call(_LIB.NNGetOpHandle(c_str(name), ctypes.byref(hdl)))
@@ -622,7 +676,7 @@ def _init_op_module(root_namespace, module_name, make_op_func):
             if op_name_prefix != '_random_' or name.endswith('_like'):
                 func_name = name[len(op_name_prefix):]
                 cur_module = submodule_dict[op_name_prefix]
-                module_name_local = "%s.%s.%s" % (root_namespace, module_name, op_name_prefix[1:-1])
+                module_name_local = f"{root_namespace}.{module_name}.{op_name_prefix[1:-1]}"
             else:
                 func_name = name
                 cur_module = module_internal
@@ -664,17 +718,39 @@ def _generate_op_module_signature(root_namespace, module_name, op_code_gen_func)
     op_code_gen_func : function
         Function for creating op functions for `ndarray` and `symbol` modules.
     """
+    license_lines = [
+        '# Licensed to the Apache Software Foundation (ASF) under one',
+        '# or more contributor license agreements.  See the NOTICE file',
+        '# distributed with this work for additional information',
+        '# regarding copyright ownership.  The ASF licenses this file',
+        '# to you under the Apache License, Version 2.0 (the',
+        '# "License"); you may not use this file except in compliance',
+        '# with the License.  You may obtain a copy of the License at',
+        '#',
+        '#   http://www.apache.org/licenses/LICENSE-2.0',
+        '#',
+        '# Unless required by applicable law or agreed to in writing,',
+        '# software distributed under the License is distributed on an',
+        '# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY',
+        '# KIND, either express or implied.  See the License for the',
+        '# specific language governing permissions and limitations',
+        '# under the License.',
+        '',
+    ]
+    license_str = os.linesep.join(license_lines)
     def get_module_file(module_name):
         """Return the generated module file based on module name."""
         path = os.path.dirname(__file__)
         module_path = module_name.split('.')
         module_path[-1] = 'gen_' + module_path[-1]
         file_name = os.path.join(path, '..', *module_path) + '.py'
-        module_file = open(file_name, 'w')
+        module_file = open(file_name, 'w', encoding="utf-8")
         dependencies = {'symbol': ['from ._internal import SymbolBase',
                                    'from ..base import _Null'],
                         'ndarray': ['from ._internal import NDArrayBase',
                                     'from ..base import _Null']}
+        module_file.write('# coding: utf-8')
+        module_file.write(license_str)
         module_file.write('# File content is auto-generated. Do not modify.' + os.linesep)
         module_file.write('# pylint: skip-file' + os.linesep)
         module_file.write(os.linesep.join(dependencies[module_name.split('.')[1]]))
@@ -684,7 +760,7 @@ def _generate_op_module_signature(root_namespace, module_name, op_code_gen_func)
         """Write the proper __all__ based on available operators."""
         module_file.write(os.linesep)
         module_file.write(os.linesep)
-        all_str = '__all__ = [' + ', '.join(["'%s'"%s for s in module_all_list]) + ']'
+        all_str = '__all__ = [' + ', '.join([f"'{s}'" for s in module_all_list]) + ']'
         module_file.write(all_str)
 
     plist = ctypes.POINTER(ctypes.c_char_p)()
@@ -698,15 +774,14 @@ def _generate_op_module_signature(root_namespace, module_name, op_code_gen_func)
         if not _is_np_op(op_name):
             op_names.append(op_name)
 
-    module_op_file = get_module_file("%s.%s.op" % (root_namespace, module_name))
+    module_op_file = get_module_file(f"{root_namespace}.{module_name}.op")
     module_op_all = []
-    module_internal_file = get_module_file("%s.%s._internal"%(root_namespace, module_name))
+    module_internal_file = get_module_file(f"{root_namespace}.{module_name}._internal")
     module_internal_all = []
     submodule_dict = {}
     for op_name_prefix in _OP_NAME_PREFIX_LIST:
         submodule_dict[op_name_prefix] =\
-            (get_module_file("%s.%s.%s" % (root_namespace, module_name,
-                                           op_name_prefix[1:-1])), [])
+            (get_module_file(f"{root_namespace}.{module_name}.{op_name_prefix[1:-1]}"), [])
     for name in op_names:
         hdl = OpHandle()
         check_call(_LIB.NNGetOpHandle(c_str(name), ctypes.byref(hdl)))
@@ -740,24 +815,45 @@ ctypes.pythonapi.PyCapsule_New.restype = ctypes.py_object
 ctypes.pythonapi.PyCapsule_GetPointer.restype = ctypes.c_void_p
 
 
-from .runtime import Features
-if Features().is_enabled("TVM_OP"):
-    _LIB_TVM_OP = libinfo.find_lib_path("libtvmop")
-    check_call(_LIB.MXLoadTVMOp(c_str(_LIB_TVM_OP[0])))
-
-
 _NP_OP_PREFIX = '_np_'
 _NP_OP_SUBMODULE_LIST = ['_random_', '_linalg_']
+_NP_OP_IMPLEMENTED_SET = {'_np_reshape'}
 
 _NP_EXT_OP_PREFIX = '_npx_'
-_NP_EXT_OP_SUBMODULE_LIST = ['_image_']
+_NP_EXT_OP_SUBMODULE_LIST = ['_image_', '_random_']
+_NP_EXT_OP_IMPLEMENTED_SET = {'_npx_softmax', '_npx_log_softmax', '_npx_masked_softmax',
+                              '_npx_masked_log_softmax', '_npx_activation',
+                              '_npx_batch_norm', '_npx_fully_connected', '_npx_pick',
+                              '_npx_convolution', '_npx_deconvolution', '_npx_pooling',
+                              '_npx_dropout', '_npx_one_hot', '_npx_rnn', '_npx_embedding',
+                              '_npx_topk', '_npx_layer_norm', '_npx_leaky_relu', '_npx_batch_dot',
+                              '_npx_broadcast_like', '_npx_arange_like', '_npx_group_norm',
+                              '_npx_foreach', '_npx_while_loop', '_npx_cond'}
 
 _NP_INTERNAL_OP_PREFIX = '_npi_'
+
+_NP_OUTPUT_IS_LIST_OPERATORS = {'_npi_split', '_npi_hsplit'}
 
 
 def _is_np_op(op_name):
     return op_name.startswith(_NP_OP_PREFIX) or op_name.startswith(_NP_EXT_OP_PREFIX)\
            or op_name.startswith(_NP_INTERNAL_OP_PREFIX)
+
+
+def _output_is_list(op_name):
+    """ Whether the output of the operator is a list.
+
+    Parameters
+    ----------
+    op_name : Name of the operator
+
+    Returns
+    -------
+
+    """
+    if _is_np_op(op_name):
+        return op_name in _NP_OUTPUT_IS_LIST_OPERATORS
+    return False
 
 
 def _get_op_submodule_name(op_name, op_name_prefix, submodule_name_list):
@@ -790,12 +886,15 @@ def _init_np_op_module(root_module_name, np_module_name, mx_module_name, make_op
     if np_module_name == 'numpy':
         op_name_prefix = _NP_OP_PREFIX
         submodule_name_list = _NP_OP_SUBMODULE_LIST
+        op_implemented_set = _NP_OP_IMPLEMENTED_SET
     elif np_module_name == 'numpy_extension':
         op_name_prefix = _NP_EXT_OP_PREFIX
         submodule_name_list = _NP_EXT_OP_SUBMODULE_LIST
+        op_implemented_set = _NP_EXT_OP_IMPLEMENTED_SET
     elif np_module_name == 'numpy._internal':
         op_name_prefix = _NP_INTERNAL_OP_PREFIX
         submodule_name_list = []
+        op_implemented_set = set()
     else:
         raise ValueError('unsupported np module name {}'.format(np_module_name))
 
@@ -805,31 +904,35 @@ def _init_np_op_module(root_module_name, np_module_name, mx_module_name, make_op
     op_names = []
     for i in range(size.value):
         name = py_str(plist[i])
-        if name.startswith(op_name_prefix):
-            op_names.append(name)
+        if mx_module_name != 'symbol':
+            if name.startswith(op_name_prefix) and name not in op_implemented_set:
+                op_names.append(name)
+        else:
+            if name.startswith(op_name_prefix):
+                op_names.append(name)
 
     if mx_module_name is None:
         # register np/npx ops for imperative programming
-        op_module_name = "%s.%s._op" % (root_module_name, np_module_name)  # e.g. mxnet.numpy._op
-        op_submodule_name = "%s.%s" % (root_module_name, np_module_name)  # e.g. mxnet.numpy.random
+        op_module_name = f"{root_module_name}.{np_module_name}._op" # e.g. mxnet.numpy._op
+        op_submodule_name = f"{root_module_name}.{np_module_name}" # e.g. mxnet.numpy.random
     elif mx_module_name in ('ndarray', 'symbol'):
         # register numpy internal ops and np/npx ops for use in Gluon
         # np internal ops are registered in mxnet.ndarray/symbol.numpy._internal
         # np ops are registered in mxnet.ndarray/symbol.numpy._op
         # npx ops are registered in mxnet.ndarray/symbol.numpy_extension._op
-        op_module_name = "%s.%s.%s" % (root_module_name, mx_module_name, np_module_name)
+        op_module_name = f"{root_module_name}.{mx_module_name}.{np_module_name}"
         if op_name_prefix != _NP_INTERNAL_OP_PREFIX:
             op_module_name += '._op'
         # e.g. mxnet.symbol.numpy.random
-        op_submodule_name = "%s.%s.%s" % (root_module_name, mx_module_name, np_module_name)
+        op_submodule_name = f"{root_module_name}.{mx_module_name}.{np_module_name}"
     else:
         raise ValueError('unsupported mxnet module {}'.format(mx_module_name))
-    op_submodule_name += '.%s'
+    op_submodule_name += '.{}'
 
     op_module = sys.modules[op_module_name]
     submodule_dict = {}
     for submodule_name in submodule_name_list:
-        submodule_dict[submodule_name] = sys.modules[op_submodule_name % submodule_name[1:-1]]
+        submodule_dict[submodule_name] = sys.modules[op_submodule_name.format(submodule_name[1:-1])]
     for name in op_names:
         hdl = OpHandle()
         check_call(_LIB.NNGetOpHandle(c_str(name), ctypes.byref(hdl)))
@@ -837,7 +940,7 @@ def _init_np_op_module(root_module_name, np_module_name, mx_module_name, make_op
         if len(submodule_name) > 0:
             func_name = name[(len(op_name_prefix) + len(submodule_name)):]
             cur_module = submodule_dict[submodule_name]
-            module_name_local = op_submodule_name % submodule_name[1:-1]
+            module_name_local = op_submodule_name.format(submodule_name[1:-1])
         else:
             func_name = name[len(op_name_prefix):]
             cur_module = op_module
@@ -851,3 +954,5 @@ def _init_np_op_module(root_module_name, np_module_name, mx_module_name, make_op
 
         if hasattr(_np_op_doc, name):
             function.__doc__ = getattr(_np_op_doc, name).__doc__
+        else:
+            function.__doc__ = re.sub('NDArray', 'ndarray', function.__doc__)

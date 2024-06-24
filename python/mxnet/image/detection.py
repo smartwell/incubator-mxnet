@@ -15,10 +15,9 @@
 # specific language governing permissions and limitations
 # under the License.
 
-# pylint: disable=unused-import
+# pylint: disable=unused-import, too-many-lines
 """Read images and perform augmentations for object detection."""
 
-from __future__ import absolute_import, print_function
 
 import json
 import logging
@@ -34,6 +33,8 @@ from .. import io
 from .image import RandomOrderAug, ColorJitterAug, LightingAug, ColorNormalizeAug
 from .image import ResizeAug, ForceResizeAug, CastAug, HueJitterAug, RandomGrayAug
 from .image import fixed_crop, ImageIter, Augmenter
+from ..util import is_np_array
+from .. import numpy as _mx_np  # pylint: disable=reimported
 
 
 class DetAugmenter(object):
@@ -692,7 +693,7 @@ class ImageDetIter(ImageIter):
     def _check_valid_label(self, label):
         """Validate label and its shape."""
         if len(label.shape) != 2 or label.shape[1] < 5:
-            msg = "Label with shape (1+, 5+) required, %s received." % str(label)
+            msg = f"Label with shape (1+, 5+) required, {str(label)} received."
             raise RuntimeError(msg)
         valid_label = np.where(np.logical_and(label[:, 0] >= 0, label[:, 3] > label[:, 1],
                                               label[:, 4] > label[:, 2]))[0]
@@ -701,7 +702,7 @@ class ImageDetIter(ImageIter):
 
     def _estimate_label_shape(self):
         """Helper function to estimate label shape"""
-        max_count = 0
+        max_count, label = 0, None
         self.reset()
         try:
             while True:
@@ -711,7 +712,7 @@ class ImageDetIter(ImageIter):
         except StopIteration:
             pass
         self.reset()
-        return (max_count, label.shape[1])
+        return (max_count, label.shape[1] if label is not None else 5)
 
     def _parse_label(self, label):
         """Helper function to parse object detection label.
@@ -729,8 +730,7 @@ class ImageDetIter(ImageIter):
         header_width = int(raw[0])
         obj_width = int(raw[1])
         if (raw.size - header_width) % obj_width != 0:
-            msg = "Label shape %s inconsistent with annotation width %d." \
-                %(str(raw.shape), obj_width)
+            msg = f"Label shape {str(raw.shape)} inconsistent with annotation width {obj_width}."
             raise RuntimeError(msg)
         out = np.reshape(raw[header_width:], (-1, obj_width))
         # remove bad ground-truths
@@ -762,6 +762,7 @@ class ImageDetIter(ImageIter):
         """Override the helper function for batchifying data"""
         i = start
         batch_size = self.batch_size
+        array_fn = _mx_np.array if is_np_array() else nd.array
         try:
             while i < batch_size:
                 label, s = self.next_sample()
@@ -778,7 +779,7 @@ class ImageDetIter(ImageIter):
                     assert i < batch_size, 'Batch size must be multiples of augmenter output length'
                     batch_data[i] = self.postprocess_data(datum)
                     num_object = label.shape[0]
-                    batch_label[i][0:num_object] = nd.array(label)
+                    batch_label[i][0:num_object] = array_fn(label)
                     if num_object < batch_label[i].shape[0]:
                         batch_label[i][num_object:] = -1
                     i += 1
@@ -801,8 +802,14 @@ class ImageDetIter(ImageIter):
             batch_label = self._cache_label
             i = self._cache_idx
         else:
-            batch_data = nd.zeros((batch_size, c, h, w))
-            batch_label = nd.empty(self.provide_label[0][1])
+            if is_np_array():
+                zeros_fn = _mx_np.zeros
+                empty_fn = _mx_np.empty
+            else:
+                zeros_fn = nd.zeros
+                empty_fn = nd.empty
+            batch_data = zeros_fn((batch_size, c, h, w))
+            batch_label = empty_fn(self.provide_label[0][1])
             batch_label[:] = -1
             i = self._batchify(batch_data, batch_label)
         # calculate the padding
@@ -840,12 +847,10 @@ class ImageDetIter(ImageIter):
         if not len(label_shape) == 2:
             raise ValueError('label_shape should have length 2')
         if label_shape[0] < self.label_shape[0]:
-            msg = 'Attempts to reduce label count from %d to %d, not allowed.' \
-                % (self.label_shape[0], label_shape[0])
+            msg = f'Attempts to reduce label count from {self.label_shape[0]} to {label_shape[0]}, not allowed.'
             raise ValueError(msg)
         if label_shape[1] != self.provide_label[0][1][2]:
-            msg = 'label_shape object width inconsistent: %d vs %d.' \
-                % (self.provide_label[0][1][2], label_shape[1])
+            msg = f'label_shape object width inconsistent: {self.provide_label[0][1][2]} vs {label_shape[1]}.'
             raise ValueError(msg)
 
     def draw_next(self, color=None, thickness=2, mean=None, std=None, clip=True,

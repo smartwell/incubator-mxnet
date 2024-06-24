@@ -23,6 +23,7 @@ import random
 import itertools
 from numpy.testing import assert_allclose, assert_array_equal
 from mxnet.test_utils import *
+from common import assert_raises_cudnn_not_satisfied, xfail_when_nonstandard_decimal_separator
 import unittest
 
 def test_box_nms_op():
@@ -43,7 +44,7 @@ def test_box_nms_op():
         op = mx.contrib.sym.box_nms(in_var, overlap_thresh=thresh, valid_thresh=valid, topk=topk,
                                     coord_start=coord, score_index=score, id_index=cid, background_id=bid,
                                     force_suppress=force, in_format=in_format, out_format=out_format)
-        exe = op.bind(ctx=default_context(), args=[arr_data], args_grad=[arr_grad])
+        exe = op._bind(ctx=default_device(), args=[arr_data], args_grad=[arr_grad])
         exe.forward(is_train=True)
         exe.backward(mx.nd.array(grad))
         assert_almost_equal(arr_grad.asnumpy(), expected)
@@ -268,9 +269,9 @@ def test_bipartite_matching_op():
     assert_match([[0.5, 0.6], [0.1, 0.2], [0.3, 0.4]], [-1, 0, 1], [1, 2], 100, True)
 
 def test_multibox_target_op():
-    anchors = mx.nd.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]], ctx=default_context()).reshape((1, -1, 4))
-    cls_pred = mx.nd.array(list(range(10)), ctx=default_context()).reshape((1, -1, 2))
-    label = mx.nd.array([1, 0.1, 0.1, 0.5, 0.6], ctx=default_context()).reshape((1, -1, 5))
+    anchors = mx.nd.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]], ctx=default_device()).reshape((1, -1, 4))
+    cls_pred = mx.nd.array(list(range(10)), ctx=default_device()).reshape((1, -1, 2))
+    label = mx.nd.array([1, 0.1, 0.1, 0.5, 0.6], ctx=default_device()).reshape((1, -1, 5))
 
     loc_target, loc_mask, cls_target = \
         mx.nd.contrib.MultiBoxTarget(anchors, label, cls_pred,
@@ -284,6 +285,7 @@ def test_multibox_target_op():
     assert_array_equal(loc_mask.asnumpy(), expected_loc_mask)
     assert_array_equal(cls_target.asnumpy(), expected_cls_target)
 
+@xfail_when_nonstandard_decimal_separator
 def test_gradient_multiplier_op():
     # We use the quadratic function in combination with gradient multiplier
     def f(x, a, b, c):
@@ -332,6 +334,125 @@ def test_multibox_prior_op():
     Y = mx.contrib.nd.MultiBoxPrior(X, sizes=[0.75, 0.5, 0.25], ratios=[20, 2, 0.5])
     boxes = Y.reshape((h, w, 5, 4))
     assert_allclose(boxes.asnumpy()[250, 250, 0, :], np.array([-0.948249,  0.362671,  1.636436,  0.530377]), atol=1e-5, rtol=1e-5)
+
+def test_box_encode_op():
+    anchors = mx.nd.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]).reshape((1, -1, 4))
+    refs = mx.nd.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]).reshape((1, -1, 4))
+    samples = mx.nd.array([[0, 1]])
+    matches = mx.nd.array([[0, 1]])
+    means = mx.nd.array([0.0, 0.0, 0.0, 0.0])
+    stds = mx.nd.array([0.1, 0.1, 0.2, 0.2])
+    Y, mask = mx.nd.contrib.box_encode(samples, matches, anchors, refs, means, stds)
+    assert_allclose(Y.asnumpy(), np.zeros((1, 2, 4)), atol=1e-5, rtol=1e-5)
+    assert_allclose(mask.asnumpy(), np.array([[[0., 0., 0., 0.], [1., 1., 1., 1.]]]), atol=1e-5, rtol=1e-5)
+
+def test_box_decode_op():
+    data = mx.nd.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]).reshape((1, -1, 4))
+    anchors = mx.nd.array([[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8]]).reshape((1, -1, 4))
+    Y = mx.nd.contrib.box_decode(data, anchors, .1, .1, .2, .2)
+    assert_allclose(Y.asnumpy(), np.array([[[-0.0562755, -0.00865743, 0.26227552, 0.42465743], \
+        [0.13240421, 0.17859563, 0.93759584, 1.1174043 ]]]), atol=1e-5, rtol=1e-5)
+
+def test_op_mrcnn_mask_target():
+    if default_device().device_type != 'gpu':
+        return
+
+    num_rois = 2
+    num_classes = 4
+    mask_size = (3, 3)
+    ctx = mx.gpu(0)
+    # (B, N, 4)
+    rois = mx.nd.array([[[2.3, 4.3, 2.2, 3.3],
+                        [3.5, 5.5, 0.9, 2.4]]], ctx=ctx)
+    gt_masks = mx.nd.arange(0, 4*32*32, ctx=ctx).reshape(1, 4, 32, 32)
+
+    # (B, N)
+    matches = mx.nd.array([[2, 0]], ctx=ctx)
+    # (B, N)
+    cls_targets = mx.nd.array([[2, 1]], ctx=ctx)
+
+    mask_targets, mask_cls = mx.nd.contrib.mrcnn_mask_target(rois, gt_masks, matches, cls_targets,
+                                                             num_rois=num_rois,
+                                                             num_classes=num_classes,
+                                                             mask_size=mask_size)
+
+    # Ground truth outputs were generated with GluonCV's target generator
+    # gluoncv.model_zoo.mask_rcnn.MaskTargetGenerator(1, num_rois, num_classes, mask_size)
+    gt_mask_targets = mx.nd.array([[[[[2193.4    , 2193.7332 , 2194.0667 ],
+                                      [2204.0667 , 2204.4    , 2204.7334 ],
+                                      [2214.7334 , 2215.0667 , 2215.4    ]],
+                                     [[2193.4    , 2193.7332 , 2194.0667 ],
+                                      [2204.0667 , 2204.4    , 2204.7334 ],
+                                      [2214.7334 , 2215.0667 , 2215.4    ]],
+                                     [[2193.4    , 2193.7332 , 2194.0667 ],
+                                      [2204.0667 , 2204.4    , 2204.7334 ],
+                                      [2214.7334 , 2215.0667 , 2215.4    ]],
+                                     [[2193.4    , 2193.7332 , 2194.0667 ],
+                                      [2204.0667 , 2204.4    , 2204.7334 ],
+                                      [2214.7334 , 2215.0667 , 2215.4    ]]],
+                                    [[[ 185.     ,  185.33334,  185.66667],
+                                      [ 195.66667,  196.00002,  196.33334],
+                                      [ 206.33333,  206.66666,  207.     ]],
+                                     [[ 185.     ,  185.33334,  185.66667],
+                                      [ 195.66667,  196.00002,  196.33334],
+                                      [ 206.33333,  206.66666,  207.     ]],
+                                     [[ 185.     ,  185.33334,  185.66667],
+                                      [ 195.66667,  196.00002,  196.33334],
+                                      [ 206.33333,  206.66666,  207.     ]],
+                                     [[ 185.     ,  185.33334,  185.66667],
+                                      [ 195.66667,  196.00002,  196.33334],
+                                      [  206.33333,  206.66666,  207.     ]]]]])
+
+    gt_mask_cls = mx.nd.array([[0,0,1,0], [0,1,0,0]])
+    gt_mask_cls = gt_mask_cls.reshape(1,2,4,1,1).broadcast_axes(axis=(3,4), size=(3,3))
+
+    assert_almost_equal(mask_targets.asnumpy(), gt_mask_targets.asnumpy())
+    assert_almost_equal(mask_cls.asnumpy(), gt_mask_cls.asnumpy())
+
+def test_dynamic_reshape():
+    def dynamic_reshape_testcases(src_shape, shape_arg, dst_shape):
+        data = mx.sym.Variable('data')
+        shape = mx.sym.Variable('shape')
+        net = mx.sym.contrib.dynamic_reshape(data, shape)
+        js = net.tojson()
+        net = mx.sym.fromjson(js)
+        dat_npy = np.random.rand(*src_shape)
+        grad_npy = np.random.rand(*dst_shape)
+        args = {
+            'data': mx.nd.array(dat_npy),
+            'shape': mx.nd.array(shape_arg)
+            }
+        args_grad = {
+            'data': mx.nd.empty(src_shape)
+        }
+        exe = net._bind(default_device(), args, args_grad)
+        exe.forward(is_train=True)
+        assert np.square(exe.outputs[0].asnumpy() - dat_npy.reshape(dst_shape)).mean() < 1E-7
+        exe.backward(out_grads=mx.nd.array(grad_npy))
+        assert np.square(exe.grad_dict['data'].asnumpy() - grad_npy.reshape(src_shape)).mean() < 1E-7
+
+        # test ndarray
+        X = mx.nd.random.uniform(shape=src_shape)
+        Y = mx.contrib.nd.dynamic_reshape(X, mx.nd.array(shape_arg))
+        assert_array_equal(Y.shape, dst_shape)
+
+    test_cases = [
+        [(2, 3, 5, 5),  (0, -1),           (2, 75)],
+        [(2, 3, 5, 5),  (0, 0, -1),        (2, 3, 25)],
+        [(5, 3, 4, 5),  (0, -1, 0),        (5, 15, 4)],
+        [(2, 3, 5, 4),  (-1, 0, 0),        (8, 3, 5)],
+        [(2, 3, 5, 5),  (0, 0, 0, 0),      (2, 3, 5, 5)],
+        [(2, 4, 5, 3),  (-1, 2, 2, 1),     (30, 2, 2, 1)],
+        [(2, 3, 5, 6),  (-2,),             (2, 3, 5, 6)],
+        [(2, 3, 5, 6),  (6, 1, -2),        (6, 1, 5, 6)],
+        [(2, 3, 5, 6),  (-3, -3),          (6, 30)],
+        [(2, 3, 5, 6),  (-3, -1),          (6, 30)],
+        [(64,),         (-4, 16, 4),       (16, 4)],
+        [(64,),         (-4, 16, -1),      (16, 4)],
+        [(64, 1, 2, 3), (-4, 16, -1, -2),  (16, 4, 1, 2, 3)]]
+
+    for test_case in test_cases:
+        dynamic_reshape_testcases(*test_case)
 
 if __name__ == '__main__':
     import nose

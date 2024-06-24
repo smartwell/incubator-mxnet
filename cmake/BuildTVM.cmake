@@ -15,9 +15,6 @@
 # specific language governing permissions and limitations
 # under the License.
 
-message(STATUS "Prepare external packages for TVM...")
-execute_process(COMMAND "sh" "${CMAKE_CURRENT_SOURCE_DIR}/contrib/tvmop/prepare_tvm.sh")
-
 # Whether enable ROCM runtime
 #
 # Possible values:
@@ -79,7 +76,7 @@ set(USE_GRAPH_RUNTIME_DEBUG OFF)
 # - ON: enable llvm with cmake's find search
 # - OFF: disable llvm
 # - /path/to/llvm-config: enable specific LLVM when multiple llvm-dev is available.
-set(USE_LLVM "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/tvm/build/llvm/bin/llvm-config")
+set(USE_LLVM ON)
 
 #---------------------------------------------
 # Contrib libraries
@@ -88,9 +85,9 @@ set(USE_LLVM "${CMAKE_CURRENT_SOURCE_DIR}/3rdparty/tvm/build/llvm/bin/llvm-confi
 set(USE_BLAS none)
 
 # /path/to/mkl: mkl root path when use mkl blas library
-# set(USE_MKL_PATH /opt/intel/mkl) for UNIX
-# set(USE_MKL_PATH ../IntelSWTools/compilers_and_libraries_2018/windows/mkl) for WIN32
-set(USE_MKL_PATH none)
+# set(USE_MKL /opt/intel/mkl) for UNIX
+# set(USE_MKL ../IntelSWTools/compilers_and_libraries_2018/windows/mkl) for WIN32
+set(USE_MKL OFF)
 
 # Whether use contrib.random in runtime
 set(USE_RANDOM OFF)
@@ -98,16 +95,19 @@ set(USE_RANDOM OFF)
 # Whether use NNPack
 set(USE_NNPACK OFF)
 
-# Whether use CuDNN
-if(USE_CUDNN AND USE_CUDA)
-    detect_cuDNN()
-    if(HAVE_CUDNN)
-        set(USE_CUDNN ON)
-    else()
-        set(USE_CUDNN OFF)
-    endif()
-else()
-    set(USE_CUDNN OFF)
+# First-class Cuda in modern CMake provides us with CMAKE_CUDA_COMPILER But TVM
+# uses the deprecated findCUDA functionality which requires
+# CUDA_TOOLKIT_ROOT_DIR We follow the FindCUDAToolkit.cmake logic to compute
+# CUDA_TOOLKIT_ROOT_DIR for TVM https://gitlab.kitware.com/cmake/cmake/merge_requests/4093/
+if(USE_CUDA)
+  get_filename_component(cuda_dir "${CMAKE_CUDA_COMPILER}" DIRECTORY)
+  set(CUDA_BIN_DIR "${cuda_dir}" CACHE PATH "" FORCE)
+  unset(cuda_dir)
+  get_filename_component(CUDA_TOOLKIT_ROOT_DIR ${CUDA_BIN_DIR} DIRECTORY ABSOLUTE)
+
+  message("CMAKE_CUDA_COMPILER: ${CMAKE_CUDA_COMPILER}")
+  message("Inferred CUDA_TOOLKIT_ROOT_DIR for TVM as: ${CUDA_TOOLKIT_ROOT_DIR}")
+  set(USE_CUDA ${CUDA_TOOLKIT_ROOT_DIR})
 endif()
 
 # Whether use cuBLAS
@@ -133,3 +133,11 @@ set(USE_VTA_TSIM OFF)
 
 # Whether use Relay debug mode
 set(USE_RELAY_DEBUG OFF)
+
+# Disable USE_MKLDNN for TVM
+set(USE_MKLDNN OFF)
+
+# Sanity checks
+if(NOT DEFINED USE_OPENMP)
+  message(FATAL_ERROR "TVM expects USE_OPENMP is set. But USE_OPENMP was neither ON nor OFF.")
+endif()

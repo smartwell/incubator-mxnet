@@ -17,6 +17,7 @@
  * under the License.
  */
 
+#include <memory>
 
 #include "./common.h"
 #include "./subgraph_property.h"
@@ -25,50 +26,53 @@
 namespace mxnet {
 namespace op {
 
-/*
+/*!
  * This selects nodes for a subgraph that only contains operators
  * in a given set and it visits nodes via both input and output links.
  */
-class ContainOpSelectorV2: public SubgraphSelectorV2 {
+class ContainOpSelectorV2 : public SubgraphSelectorV2 {
  public:
   explicit ContainOpSelectorV2(const std::unordered_set<std::string>& op_names)
-    : op_names_(op_names) {}
+      : op_names_(op_names) {}
 
-  bool Select(const BiDirectedNode &sn) override {
-    const auto &seed_node = *sn.node;
+  bool Select(const BiDirectedNode& sn) override {
+    const auto& seed_node = *sn.node;
     return !seed_node.is_variable() && op_names_.count(seed_node.op()->name);
   }
 
-  bool SelectInput(const BiDirectedNode &sn, const BiDirectedNode &snew_node) override {
-    const auto &input_node = *snew_node.node;
+  bool SelectInput(const BiDirectedNode& sn, const BiDirectedNode& snew_node) override {
+    const auto& input_node = *snew_node.node;
     return !input_node.is_variable() && op_names_.count(input_node.op()->name);
   }
 
-  bool SelectOutput(const BiDirectedNode &sn, const BiDirectedNode &snew_node) override {
-    const auto &output_node = *snew_node.node;
+  bool SelectOutput(const BiDirectedNode& sn, const BiDirectedNode& snew_node) override {
+    const auto& output_node = *snew_node.node;
     return !output_node.is_variable() && op_names_.count(output_node.op()->name);
   }
+
  private:
   const std::unordered_set<std::string>& op_names_;
 };
 
-/*
+/*!
  * This subgraph property finds a subgraph whose nodes have only operators
  * within a set. The operators in the subgraph will be executed by _CachedOp.
  */
-class DefaultSubgraphProperty: public SubgraphProperty {
+class DefaultSubgraphProperty : public SubgraphProperty {
  public:
-  static SubgraphPropertyPtr Create() { return std::make_shared<DefaultSubgraphProperty>(); }
-  nnvm::NodePtr CreateSubgraphNode(const nnvm::Symbol &sym,
-                                           const SubgraphSelectorPtr& subgraph_selector,
-                                           const int subgraph_id = 0) const override {
-    nnvm::NodePtr n = nnvm::Node::Create();
-    n->attrs.op = Op::Get("_CachedOp");
-    n->attrs.name = "_CachedOp" + std::to_string(subgraph_id);
+  static SubgraphPropertyPtr Create() {
+    return std::make_shared<DefaultSubgraphProperty>();
+  }
+  nnvm::ObjectPtr CreateSubgraphNode(const nnvm::Symbol& sym,
+                                     const SubgraphSelectorPtr& subgraph_selector,
+                                     const int subgraph_id = 0) const override {
+    nnvm::ObjectPtr n = nnvm::Node::Create();
+    n->attrs.op       = Op::Get("_CachedOp");
+    n->attrs.name     = "_CachedOp" + std::to_string(subgraph_id);
     n->attrs.subgraphs.push_back(std::make_shared<nnvm::Symbol>(sym));
 
-    std::vector<std::pair<std::string, std::string> > flags{{"static_alloc", "true"}};
-    n->attrs.parsed = CachedOpPtr(new CachedOp(sym, flags));
+    std::vector<std::pair<std::string, std::string>> flags{{"static_alloc", "true"}};
+    n->attrs.parsed = std::make_shared<CachedOp>(sym, flags);
 
     return n;
   }

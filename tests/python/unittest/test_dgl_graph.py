@@ -61,7 +61,7 @@ def check_compact(csr, id_arr, num_nodes):
     compact = mx.nd.contrib.dgl_graph_compact(csr, id_arr, graph_sizes=num_nodes, return_mapping=False)
     assert compact.shape[0] == num_nodes
     assert compact.shape[1] == num_nodes
-    assert mx.nd.sum(compact.indptr == csr.indptr[0:(num_nodes + 1)]).asnumpy() == num_nodes + 1
+    assert mx.nd.sum(compact.indptr == csr.indptr[0:int(num_nodes + 1)]).asnumpy() == num_nodes + 1
     sub_indices = compact.indices.asnumpy()
     indices = csr.indices.asnumpy()
     id_arr = id_arr.asnumpy()
@@ -227,7 +227,7 @@ def test_subgraph():
             assert np.sum(remain == row_start) == len(remain)
             break
         row = subgs[0].indices[row_start:row_end]
-        for j, subv2 in enumerate(row.asnumpy()):
+        for _, subv2 in enumerate(row.asnumpy()):
             v2 = vertices[subv2]
             assert sp_g[v1, v2] == sp_subg[subv1, subv2]
 
@@ -240,6 +240,3 @@ def test_adjacency():
     assert_array_equal(adj.indices, g.indices)
     assert_array_equal(adj.data, mx.nd.ones(shape=g.indices.shape))
 
-if __name__ == "__main__":
-    import nose
-    nose.runmodule()

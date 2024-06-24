@@ -18,31 +18,32 @@
  */
 
 /*!
- * Copyright (c) 2015 by Contributors
  * \file kvstore.cc
  * \brief implement kv_store
  */
 #include <mxnet/kvstore.h>
-#include <stdlib.h>
 #include <dmlc/logging.h>
 #include "./kvstore_local.h"
 
 #if MXNET_USE_DIST_KVSTORE
 #include "./kvstore_dist.h"
+#include "./p3store_dist.h"
 std::atomic<int> mxnet::kvstore::KVStoreDist::customer_id_{0};
 #endif  // MXNET_USE_DIST_KVSTORE
 #if MXNET_USE_NCCL
 #include "./kvstore_nccl.h"
 #endif  // MXNET_USE_NCCL
 
+#include <cstdlib>
+
 namespace mxnet {
 
-KVStore* KVStore::Create(const char *type_name) {
+KVStore* KVStore::Create(const char* type_name) {
   std::string tname = type_name;
   std::transform(tname.begin(), tname.end(), tname.begin(), ::tolower);
-  KVStore* kv = nullptr;
+  KVStore* kv          = nullptr;
   bool use_device_comm = false;
-  auto has = [tname](const std::string& pattern) {
+  auto has             = [tname](const std::string& pattern) {
     return tname.find(pattern) != std::string::npos;
   };
   if (has("device")) {
@@ -51,7 +52,13 @@ KVStore* KVStore::Create(const char *type_name) {
 
   if (has("dist")) {
 #if MXNET_USE_DIST_KVSTORE
-    kv = new kvstore::KVStoreDist(use_device_comm);
+    auto ps_type = dmlc::GetEnv("DMLC_PS_VAN_TYPE", std::string("none"));
+    if (ps_type == "p3") {
+      CHECK(!has("async")) << "Asynchronous update is not supported in P3StoreDist";
+      kv = new kvstore::P3StoreDist(use_device_comm);
+    } else {
+      kv = new kvstore::KVStoreDist(use_device_comm);
+    }
     if (!has("_async") && kv->IsWorkerNode() && kv->get_rank() == 0) {
       // configure the server to be the sync mode
       kv->SendCommandToServers(static_cast<int>(kvstore::CommandType::kSyncMode), "");
@@ -69,7 +76,7 @@ KVStore* KVStore::Create(const char *type_name) {
       return nullptr;
 #endif
     } else {
-      kv =  new kvstore::KVStoreLocal(use_device_comm);
+      kv = new kvstore::KVStoreLocal(use_device_comm);
     }
   }
   kv->type_ = tname;

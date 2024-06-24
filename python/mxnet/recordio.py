@@ -16,7 +16,6 @@
 # under the License.
 
 """Read and write for the RecordIO data format."""
-from __future__ import absolute_import
 from collections import namedtuple
 from multiprocessing import current_process
 
@@ -79,7 +78,7 @@ class MXRecordIO(object):
             check_call(_LIB.MXRecordIOReaderCreate(self.uri, ctypes.byref(self.handle)))
             self.writable = False
         else:
-            raise ValueError("Invalid flag %s"%self.flag)
+            raise ValueError(f"Invalid flag {self.flag}")
         # pylint: disable=not-callable
         # It's bug from pylint(astroid). See https://github.com/PyCQA/pylint/issues/1699
         self.pid = current_process().pid
@@ -246,10 +245,11 @@ class MXIndexedRecordIO(MXRecordIO):
 
     def open(self):
         super(MXIndexedRecordIO, self).open()
-        self.idx = {}
-        self.keys = []
         self.fidx = open(self.idx_path, self.flag)
-        if not self.writable:
+        if self.writable:
+            self.idx = {}
+            self.keys = []
+        elif not self.idx:
             for line in iter(self.fidx.readline, ''):
                 line = line.strip().split('\t')
                 key = self.key_type(line[0])
@@ -336,7 +336,7 @@ class MXIndexedRecordIO(MXRecordIO):
         key = self.key_type(idx)
         pos = self.tell()
         self.write(buf)
-        self.fidx.write('%s\t%d\n'%(str(key), pos))
+        self.fidx.write(f'{str(key)}\t{pos}\n')
         self.idx[key] = pos
         self.keys.append(key)
 

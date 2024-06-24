@@ -17,8 +17,7 @@
 
 import numpy as np
 import mxnet as mx
-from common import setup_module, with_seed, teardown
-from mxnet.test_utils import assert_almost_equal
+from mxnet.test_utils import assert_almost_equal, environment
 
 
 def check_bind_with_uniform(uf, gf, dim, sf=None, lshape=None, rshape=None):
@@ -39,15 +38,15 @@ def check_bind_with_uniform(uf, gf, dim, sf=None, lshape=None, rshape=None):
     rhs_arr = mx.nd.array(np.random.uniform(-1, 1, rshape))
     lhs_grad = mx.nd.empty(lshape)
     rhs_grad = mx.nd.empty(rshape)
-    executor = ret.bind(mx.Context('cpu'),
+    executor = ret._bind(mx.Context('cpu'),
                         args=[lhs_arr, rhs_arr],
                         args_grad=[lhs_grad, rhs_grad])
 
-    exec3 = ret.bind(mx.Context('cpu'),
+    exec3 = ret._bind(mx.Context('cpu'),
                      args=[lhs_arr, rhs_arr])
 
 
-    exec4 = ret.bind(mx.Context('cpu'),
+    exec4 = ret._bind(mx.Context('cpu'),
                      args={'rhs': rhs_arr, 'lhs': lhs_arr},
                      args_grad={'lhs': lhs_grad, 'rhs': rhs_grad})
 
@@ -72,53 +71,43 @@ def check_bind_with_uniform(uf, gf, dim, sf=None, lshape=None, rshape=None):
     assert_almost_equal(rhs_grad.asnumpy(), rhs_grad2, rtol=1e-5, atol=1e-5)
 
 
-@with_seed()
 def test_bind():
-    def check_bind(disable_bulk_exec):
-        if disable_bulk_exec:
-            prev_bulk_inf_val = mx.test_utils.set_env_var("MXNET_EXEC_BULK_EXEC_INFERENCE", "0", "1")
-            prev_bulk_train_val = mx.test_utils.set_env_var("MXNET_EXEC_BULK_EXEC_TRAIN", "0", "1")
+    for enable_bulking in ['0', '1']:
+        with environment({'MXNET_EXEC_BULK_EXEC_INFERENCE': enable_bulking,
+                          'MXNET_EXEC_BULK_EXEC_TRAIN': enable_bulking}):
+            nrepeat = 10
+            maxdim = 4
+            for _ in range(nrepeat):
+                for dim in range(1, maxdim):
+                    check_bind_with_uniform(lambda x, y: x + y,
+                                            lambda g, x, y: (g, g),
+                                            dim)
+                    check_bind_with_uniform(lambda x, y: x - y,
+                                            lambda g, x, y: (g, -g),
+                                            dim)
+                    check_bind_with_uniform(lambda x, y: x * y,
+                                            lambda g, x, y: (y * g, x * g),
+                                            dim)
+                    check_bind_with_uniform(lambda x, y: x / y,
+                                            lambda g, x, y: (g / y, -x * g/ (y**2)),
+                                            dim)
 
-        nrepeat = 10
-        maxdim = 4
-        for repeat in range(nrepeat):
-            for dim in range(1, maxdim):
-                check_bind_with_uniform(lambda x, y: x + y,
-                                        lambda g, x, y: (g, g),
-                                        dim)
-                check_bind_with_uniform(lambda x, y: x - y,
-                                        lambda g, x, y: (g, -g),
-                                        dim)
-                check_bind_with_uniform(lambda x, y: x * y,
-                                        lambda g, x, y: (y * g, x * g),
-                                        dim)
-                check_bind_with_uniform(lambda x, y: x / y,
-                                        lambda g, x, y: (g / y, -x * g/ (y**2)),
-                                        dim)
-
-                check_bind_with_uniform(lambda x, y: np.maximum(x, y),
-                                        lambda g, x, y: (g * (x>=y), g * (y>x)),
-                                        dim,
-                                        sf=mx.symbol.maximum)
-                check_bind_with_uniform(lambda x, y: np.minimum(x, y),
-                                        lambda g, x, y: (g * (x<=y), g * (y<x)),
-                                        dim,
-                                        sf=mx.symbol.minimum)
-        if disable_bulk_exec:
-           mx.test_utils.set_env_var("MXNET_EXEC_BULK_EXEC_INFERENCE", prev_bulk_inf_val)
-           mx.test_utils.set_env_var("MXNET_EXEC_BULK_EXEC_TRAIN", prev_bulk_train_val)
-
-    check_bind(True)
-    check_bind(False)
+                    check_bind_with_uniform(lambda x, y: np.maximum(x, y),
+                                            lambda g, x, y: (g * (x>=y), g * (y>x)),
+                                            dim,
+                                            sf=mx.symbol.maximum)
+                    check_bind_with_uniform(lambda x, y: np.minimum(x, y),
+                                            lambda g, x, y: (g * (x<=y), g * (y<x)),
+                                            dim,
+                                            sf=mx.symbol.minimum)
 
 
 # @roywei: Removing fixed seed as flakiness in this test is fixed
-# tracked at https://github.com/apache/incubator-mxnet/issues/11686
-@with_seed()
+# tracked at https://github.com/apache/mxnet/issues/11686
 def test_dot():
     nrepeat = 10
     maxdim = 4
-    for repeat in range(nrepeat):
+    for _ in range(nrepeat):
         s =tuple(np.random.randint(1, 200, size=3))
         check_bind_with_uniform(lambda x, y: np.dot(x, y),
                                 lambda g, x, y: (np.dot(g, y.T), np.dot(x.T, g)),
@@ -126,7 +115,7 @@ def test_dot():
                                 lshape=(s[0], s[1]),
                                 rshape=(s[1], s[2]),
                                 sf = mx.symbol.dot)
-    for repeat in range(nrepeat):
+    for _ in range(nrepeat):
         s =tuple(np.random.randint(1, 200, size=1))
         check_bind_with_uniform(lambda x, y: np.dot(x, y),
                                 lambda g, x, y: (g * y, g * x),
@@ -136,35 +125,55 @@ def test_dot():
                                 sf = mx.symbol.dot)
 
 
-@with_seed()
 def test_reshape():
     x = mx.sym.Variable('x')
     y = mx.sym.FullyConnected(x, num_hidden=4)
 
-    exe = y.simple_bind(mx.cpu(), x=(5,4), grad_req='null')
+    exe = y._simple_bind(mx.cpu(), x=(5,4), grad_req='null')
     exe.arg_arrays[0][:] = 1
     exe.arg_arrays[1][:] = mx.nd.ones((4,4))
     exe.arg_arrays[2][:] = 0
 
-    new_exe = exe.reshape(x=(3,4))
-    new_exe.forward(is_train=False)
+    exe.forward(is_train=False)
     # test sub exec forward
-    assert np.all(new_exe.outputs[0].asnumpy() == 4)
+    assert np.all(exe.outputs[0].asnumpy() == 4)
     # test shared memory
     assert np.all(exe.outputs[0].asnumpy()[:3] == 4)
     # test base exec forward
     exe.forward(is_train=False)
     assert np.all(exe.outputs[0].asnumpy() == 4)
 
-    # test sharing ndarray depending on new_shape
-    new_exe = exe.reshape(allow_up_sizing=True, x=(6,4))
     # data ndarray is not shared between exe and new_exe
-    new_exe.arg_arrays[0][:] = 0
-    assert np.all(exe.arg_arrays[0].asnumpy() == 1)
+    exe.arg_arrays[0][:] = 0
     # weight ndarray is shared between exe and new_exe
-    assert np.all(new_exe.arg_arrays[1].asnumpy() == 1)
+    assert np.all(exe.arg_arrays[1].asnumpy() == 1)
 
+def test_cached_op_init():
+    def check_init(static_alloc, static_shape):
+        out = mx.sym.zeros((3,3))
+        flags = [('static_alloc', static_alloc), ('static_shape', static_shape)]
+        exe = mx.ndarray.CachedOp(out, flags)
+        z = exe(None, default_device=mx.cpu())
+        assert np.all(z.asnumpy() == 0)
 
-if __name__ == "__main__":
-    import nose
-    nose.runmodule()
+    check_init(False, False)
+    check_init(True, False)
+    check_init(True, True)
+
+def test_elemwise_add_grad():
+    json = "{\"nodes\": [{\"op\":\"null\",\"name\":\".Inputs.Input1\",\"inputs\":[]},{\"op\":\"null\",\"name\":\".Inputs.Input2\",\"inputs\":[]},{\"op\":\"elemwise_add\",\"name\":\".$0\",\"inputs\":[[0,0,0],[1,0,0]]},{\"op\":\"_copy\",\"name\":\".Outputs.Output\",\"inputs\":[[2,0,0]]}],\"arg_nodes\":[0,1],\"heads\":[[3,0,0]]}"
+    sym = mx.symbol.fromjson(json)
+
+    ex = sym._bind(
+        mx.cpu(), 
+        {'.Inputs.Input1': mx.nd.array([0.4]), '.Inputs.Input2': mx.nd.array([0.5])},
+        args_grad={
+            '.Inputs.Input1': mx.ndarray.zeros((1)), 
+            '.Inputs.Input2': mx.ndarray.zeros((1))
+        },
+        grad_req={'.Inputs.Input1': 'null', '.Inputs.Input2': 'write'}
+    )
+    ex.forward(is_train=True)
+    print(ex.outputs)
+    ex.backward(out_grads=mx.nd.array([1]))
+    print(ex.grad_arrays)

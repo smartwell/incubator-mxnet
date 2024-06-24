@@ -151,6 +151,18 @@ inline std::vector<std::string> Symbol::ListArguments() const {
   }
   return ret;
 }
+
+inline std::vector<std::string> Symbol::ListInputs() const {
+  std::vector<std::string> ret;
+  mx_uint size;
+  const char **sarr;
+  NNSymbolListInputNames(GetHandle(), 0, &size, &sarr);
+  for (mx_uint i = 0; i < size; ++i) {
+    ret.push_back(std::string(sarr[i]));
+  }
+  return ret;
+}
+
 inline std::vector<std::string> Symbol::ListOutputs() const {
   std::vector<std::string> ret;
   mx_uint size;
@@ -178,9 +190,9 @@ inline std::map<std::string, std::string> Symbol::ListAttributes() const {
     CHECK_EQ(MXSymbolListAttrShallow(GetHandle(), &size, &pairs), 0);
     std::map<std::string, std::string> attributes;
     for (mx_uint i = 0; i < size; ++i) {
-        // pairs is 2 * size with key, value pairs according to
-        //   https://github.com/apache/incubator-mxnet/blob/master/include/mxnet/c_api.h#L1428
-        attributes[pairs[2 * i]] = pairs[2 * i + 1];
+      // pairs is 2 * size with key, value pairs according to
+      //   https://github.com/apache/mxnet/blob/master/include/mxnet/c_api.h#L1428
+      attributes[pairs[2 * i]] = pairs[2 * i + 1];
     }
     return attributes;
 }
@@ -245,12 +257,12 @@ inline void Symbol::InferShape(
   const int **aux_shape_data;
   int complete;
 
-  CHECK_EQ(MXSymbolInferShapeEx(GetHandle(), keys.size(), keys.data(),
-                                arg_ind_ptr.data(), arg_shape_data.data(),
-                                &in_shape_size, &in_shape_ndim, &in_shape_data,
-                                &out_shape_size, &out_shape_ndim, &out_shape_data,
-                                &aux_shape_size, &aux_shape_ndim, &aux_shape_data,
-                                &complete),
+  CHECK_EQ(MXSymbolInferShape(GetHandle(), keys.size(), keys.data(),
+                              arg_ind_ptr.data(), arg_shape_data.data(),
+                              &in_shape_size, &in_shape_ndim, &in_shape_data,
+                              &out_shape_size, &out_shape_ndim, &out_shape_data,
+                              &aux_shape_size, &aux_shape_ndim, &aux_shape_data,
+                              &complete),
            0);
 
   if (complete) {

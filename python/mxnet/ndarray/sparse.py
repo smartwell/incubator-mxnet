@@ -19,8 +19,6 @@
 # pylint: disable=wildcard-import, unused-wildcard-import, too-many-lines
 """Sparse NDArray API of MXNet."""
 
-from __future__ import absolute_import
-from __future__ import division
 try:
     from __builtin__ import slice as py_slice
     from __builtin__ import sum as py_sum
@@ -41,8 +39,8 @@ import numpy as np
 from ..base import NotSupportedForSparseNDArray
 from ..base import _LIB, numeric_types
 from ..base import c_array_buf, mx_real_t, integer_types
-from ..base import mx_uint, NDArrayHandle, check_call
-from ..context import Context, current_context
+from ..base import NDArrayHandle, check_call
+from ..device import Device, current_device
 from . import _internal
 from . import op
 try:
@@ -50,8 +48,8 @@ try:
 except ImportError:
     gs_retain = None
 from ._internal import _set_ndarray_class
-from .ndarray import NDArray, _storage_type, _DTYPE_NP_TO_MX, _DTYPE_MX_TO_NP
-from .ndarray import _STORAGE_TYPE_STR_TO_ID, _STORAGE_TYPE_ROW_SPARSE, _STORAGE_TYPE_CSR
+from .ndarray import NDArray, _storage_type, dtype_np_to_mx, dtype_mx_to_np
+from .ndarray import _STORAGE_TYPE_STR_TO_ID, _STORAGE_TYPE_ROW_SPARSE, _STORAGE_TYPE_CSR, _int64_enabled
 from .ndarray import _STORAGE_TYPE_UNDEFINED, _STORAGE_TYPE_DEFAULT
 from .ndarray import zeros as _zeros_ndarray
 from .ndarray import array as _array
@@ -83,24 +81,39 @@ def _new_alloc_handle(stype, shape, ctx, delay_alloc, dtype, aux_types, aux_shap
     for aux_t in aux_types:
         if np.dtype(aux_t) != np.dtype("int64"):
             raise NotImplementedError("only int64 is supported for aux types")
-    aux_type_ids = [int(_DTYPE_NP_TO_MX[np.dtype(aux_t).type]) for aux_t in aux_types]
+    aux_type_ids = [int(dtype_np_to_mx(aux_t)) for aux_t in aux_types]
     aux_shapes = [(0,) for aux_t in aux_types] if aux_shapes is None else aux_shapes
     aux_shape_lens = [len(aux_shape) for aux_shape in aux_shapes]
     aux_shapes = py_sum(aux_shapes, ())
-    num_aux = mx_uint(len(aux_types))
-    check_call(_LIB.MXNDArrayCreateSparseEx(
-        ctypes.c_int(int(_STORAGE_TYPE_STR_TO_ID[stype])),
-        c_array_buf(mx_uint, native_array('I', shape)),
-        mx_uint(len(shape)),
-        ctypes.c_int(ctx.device_typeid),
-        ctypes.c_int(ctx.device_id),
-        ctypes.c_int(int(delay_alloc)),
-        ctypes.c_int(int(_DTYPE_NP_TO_MX[np.dtype(dtype).type])),
-        num_aux,
-        c_array_buf(ctypes.c_int, native_array('i', aux_type_ids)),
-        c_array_buf(mx_uint, native_array('I', aux_shape_lens)),
-        c_array_buf(mx_uint, native_array('I', aux_shapes)),
-        ctypes.byref(hdl)))
+    num_aux = ctypes.c_uint(len(aux_types))
+    if _int64_enabled():
+        check_call(_LIB.MXNDArrayCreateSparseEx64(
+            ctypes.c_int(int(_STORAGE_TYPE_STR_TO_ID[stype])),
+            c_array_buf(ctypes.c_int64, native_array('q', shape)),
+            ctypes.c_int(len(shape)),
+            ctypes.c_int(ctx.device_typeid),
+            ctypes.c_int(ctx.device_id),
+            ctypes.c_int(int(delay_alloc)),
+            ctypes.c_int(int(dtype_np_to_mx(dtype))),
+            num_aux,
+            c_array_buf(ctypes.c_int, native_array('i', aux_type_ids)),
+            c_array_buf(ctypes.c_int, native_array('i', aux_shape_lens)),
+            c_array_buf(ctypes.c_int64, native_array('q', aux_shapes)),
+            ctypes.byref(hdl)))
+    else:
+        check_call(_LIB.MXNDArrayCreateSparseEx(
+            ctypes.c_int(int(_STORAGE_TYPE_STR_TO_ID[stype])),
+            c_array_buf(ctypes.c_uint, native_array('I', shape)),
+            ctypes.c_uint(len(shape)),
+            ctypes.c_int(ctx.device_typeid),
+            ctypes.c_int(ctx.device_id),
+            ctypes.c_int(int(delay_alloc)),
+            ctypes.c_int(int(dtype_np_to_mx(dtype))),
+            num_aux,
+            c_array_buf(ctypes.c_int, native_array('i', aux_type_ids)),
+            c_array_buf(ctypes.c_uint, native_array('I', aux_shape_lens)),
+            c_array_buf(ctypes.c_uint, native_array('I', aux_shapes)),
+            ctypes.byref(hdl)))
     return hdl
 
 
@@ -112,10 +125,9 @@ class BaseSparseNDArray(NDArray):
 
     def __repr__(self):
         """Returns a string representation of the sparse array."""
-        shape_info = 'x'.join(['%d' % x for x in self.shape])
+        shape_info = 'x'.join([f'{x}' for x in self.shape])
         # The data content is not displayed since the array usually has big shape
-        return '\n<%s %s @%s>' % (self.__class__.__name__,
-                                  shape_info, self.context)
+        return f'\n<{self.__class__.__name__} {shape_info} @{self.context}>'
 
     def __add__(self, other):
         return add(self, other)
@@ -171,7 +183,7 @@ class BaseSparseNDArray(NDArray):
         """
         aux_type = ctypes.c_int()
         check_call(_LIB.MXNDArrayGetAuxType(self.handle, i, ctypes.byref(aux_type)))
-        return _DTYPE_MX_TO_NP[aux_type.value]
+        return dtype_mx_to_np(aux_type.value)
 
     @property
     def _num_aux(self):
@@ -217,6 +229,7 @@ class BaseSparseNDArray(NDArray):
         if not copy and np.dtype(dtype) == self.dtype:
             return self
 
+        # Use copyto for casting, as op.cast(self, dtype=dtype) doesn't support sparse stype
         res = zeros(shape=self.shape, ctx=self.context,
                     dtype=dtype, stype=self.stype)
         self.copyto(res)
@@ -241,7 +254,7 @@ class BaseSparseNDArray(NDArray):
                 warnings.warn('You are attempting to copy an array to itself', RuntimeWarning)
                 return False
             return _internal._copyto(self, out=other)
-        elif isinstance(other, Context):
+        elif isinstance(other, Device):
             hret = _ndarray_cls(_new_alloc_handle(self.stype, self.shape, other,
                                                   True, self.dtype, self._aux_types))
             return _internal._copyto(self, out=hret)
@@ -436,7 +449,7 @@ class CSRNDArray(BaseSparseNDArray):
                 tmp = _array(value)
                 tmp.copyto(self)
             else:
-                raise TypeError('type %s not supported' % str(type(value)))
+                raise TypeError(f'type {str(type(value))} not supported')
         else:
             assert(isinstance(key, (int, tuple)))
             raise Exception('CSRNDArray only supports [:] for assignment')
@@ -525,7 +538,7 @@ class CSRNDArray(BaseSparseNDArray):
             The copied array. If ``other`` is an ``NDArray`` or ``CSRNDArray``, then the return
             value and ``other`` will point to the same ``NDArray`` or ``CSRNDArray``.
         """
-        if isinstance(other, Context):
+        if isinstance(other, Device):
             return super(CSRNDArray, self).copyto(other)
         elif isinstance(other, NDArray):
             stype = other.stype
@@ -553,8 +566,8 @@ class CSRNDArray(BaseSparseNDArray):
         indices = self.indices.asnumpy()
         indptr = self.indptr.asnumpy()
         if not spsp:
-            raise ImportError("scipy is not available. \
-                               Please check if the scipy python bindings are installed.")
+            raise ImportError("scipy could not be imported. "
+                              "Please make sure that the scipy is installed.")
         return spsp.csr_matrix((data, indices, indptr), shape=self.shape, dtype=self.dtype)
 
 # pylint: disable=abstract-method
@@ -699,7 +712,7 @@ class RowSparseNDArray(BaseSparseNDArray):
                 tmp = _array(value)
                 tmp.copyto(self)
             else:
-                raise TypeError('type %s not supported' % str(type(value)))
+                raise TypeError(f'type {str(type(value))} not supported')
         else:
             assert(isinstance(key, (int, tuple)))
             raise TypeError('RowSparseNDArray only supports [:] for assignment')
@@ -772,7 +785,7 @@ class RowSparseNDArray(BaseSparseNDArray):
             The copied array. If ``other`` is an ``NDArray`` or ``RowSparseNDArray``, then the
             return value and ``other`` will point to the same ``NDArray`` or ``RowSparseNDArray``.
         """
-        if isinstance(other, Context):
+        if isinstance(other, Device):
             return super(RowSparseNDArray, self).copyto(other)
         elif isinstance(other, NDArray):
             stype = other.stype
@@ -940,6 +953,9 @@ def csr_matrix(arg1, shape=None, ctx=None, dtype=None):
                     row = row.asnumpy()
                 if isinstance(col, NDArray):
                     col = col.asnumpy()
+                if not spsp:
+                    raise ImportError("scipy could not be imported. "
+                                      "Please make sure that the scipy is installed.")
                 coo = spsp.coo_matrix((data, (row, col)), shape=shape)
                 _check_shape(coo.shape, shape)
                 csr = coo.tocsr()
@@ -981,7 +997,7 @@ def _csr_matrix_from_definition(data, indices, indptr, shape=None, ctx=None,
     # pylint: disable= no-member, protected-access
     storage_type = 'csr'
     # context
-    ctx = current_context() if ctx is None else ctx
+    ctx = current_device() if ctx is None else ctx
     # types
     dtype = _prepare_default_dtype(data, dtype)
     indptr_type = _STORAGE_AUX_TYPES[storage_type][0] if indptr_type is None else indptr_type
@@ -1144,7 +1160,7 @@ def _row_sparse_ndarray_from_definition(data, indices, shape=None, ctx=None,
     """Create a `RowSparseNDArray` based on data and indices"""
     storage_type = 'row_sparse'
     # context
-    ctx = current_context() if ctx is None else ctx
+    ctx = current_device() if ctx is None else ctx
     # types
     dtype = _prepare_default_dtype(data, dtype)
     indices_type = _STORAGE_AUX_TYPES[storage_type][0] if indices_type is None else indices_type
@@ -1184,7 +1200,7 @@ def _ndarray_cls(handle, writable=True, stype=_STORAGE_TYPE_UNDEFINED):
     elif stype == _STORAGE_TYPE_ROW_SPARSE:
         return RowSparseNDArray(handle, writable=writable)
     else:
-        raise Exception("unknown storage type: %s"%stype)
+        raise Exception(f"unknown storage type: {stype}")
 
 
 _set_ndarray_class(_ndarray_cls)
@@ -1533,12 +1549,12 @@ def zeros(stype, shape, ctx=None, dtype=None, **kwargs):
     if stype == 'default':
         return _zeros_ndarray(shape, ctx=ctx, dtype=dtype, **kwargs)
     if ctx is None:
-        ctx = current_context()
+        ctx = current_device()
     dtype = mx_real_t if dtype is None else dtype
     if stype in ('row_sparse', 'csr'):
         aux_types = _STORAGE_AUX_TYPES[stype]
     else:
-        raise ValueError("unknown storage type" + stype)
+        raise ValueError("unknown storage type: " + stype)
     out = _ndarray_cls(_new_alloc_handle(stype, shape, ctx, True, dtype, aux_types))
     return _internal._zeros(shape=shape, ctx=ctx, dtype=dtype, out=out, **kwargs)
     # pylint: enable= no-member, protected-access
@@ -1566,7 +1582,7 @@ def empty(stype, shape, ctx=None, dtype=None):
     if isinstance(shape, int):
         shape = (shape, )
     if ctx is None:
-        ctx = current_context()
+        ctx = current_device()
     if dtype is None:
         dtype = mx_real_t
     assert(stype is not None)
@@ -1607,7 +1623,7 @@ def array(source_array, ctx=None, dtype=None):
     >>> mx.nd.sparse.array(mx.nd.sparse.zeros('row_sparse', (3, 2)))
     <RowSparseNDArray 3x2 @cpu(0)>
     """
-    ctx = current_context() if ctx is None else ctx
+    ctx = current_device() if ctx is None else ctx
     if isinstance(source_array, NDArray):
         assert(source_array.stype != 'default'), \
                "Please use `tostype` to create RowSparseNDArray or CSRNDArray from an NDArray"

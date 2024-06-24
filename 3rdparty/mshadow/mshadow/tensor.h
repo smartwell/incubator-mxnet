@@ -1,5 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
- *  Copyright (c) 2014 by Contributors
  * \file tensor.h
  * \brief header file of tensor data structure and functions
  *  This lib requires explicit memory allocation and de-allocation
@@ -31,6 +49,17 @@ struct gpu {
   /*! \brief device flag number, identifies this device */
   static const int kDevMask = 1 << 1;
 };
+
+template <typename xpu>
+struct LapackIndex {
+    using IndexT = lapack_index_t;
+};
+
+template <>
+struct LapackIndex <gpu> {
+    using IndexT = int;
+};
+
 template<int ndim>
 struct Shape;
 
@@ -69,7 +98,7 @@ struct Shape {
    * \param idx dimension index
    * \return the corresponding dimension size
    */
-  MSHADOW_XINLINE index_t &operator[](index_t idx) {
+  MSHADOW_XINLINE index_t &operator[](int idx) {
     return shape_[idx];
   }
   /*!
@@ -77,8 +106,11 @@ struct Shape {
    * \param idx dimension index
    * \return the corresponding dimension size
    */
-  MSHADOW_XINLINE const index_t &operator[](index_t idx) const {
+  MSHADOW_XINLINE const index_t &operator[](int idx) const {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
     return shape_[idx];
+#pragma GCC diagnostic pop
   }
   /*!
    * \return whether two shape equals
@@ -359,6 +391,97 @@ inline Shape<5> ConvertLayout(const Shape<5>& src, int src_layout, int dst_layou
 }
 
 /*!
+ * \brief returns axes of transpose operation
+ *        that needs to be performed between src layout and dst
+ * \param src_layout input layout
+ * \param dst_layout output layout
+ * \return vector of required type describing axes of a transpose operation
+ */
+template <typename dim_t>
+inline std::vector<dim_t> getTranspAxes(const LayoutFlag src_layout, const LayoutFlag dst_layout) {
+  auto apply = [](const std::vector<dim_t>& v, const std::vector<dim_t>& op) {
+    CHECK_EQ(v.size(), op.size()) << "Layout ndims does not match";
+    std::vector<dim_t> ret(v.size());
+    for (size_t i = 0; i < v.size(); i++) {
+      ret[i] = v[op[i]];
+    }
+    return ret;
+  };
+  std::vector<dim_t> axes;
+  // transpose from `case` to ND?H?WC
+  switch (src_layout) {
+    case kUNKNOWN:
+      LOG(FATAL) << "Unknown source layout";
+      break;
+    case kNHWC:
+      axes = std::vector<dim_t>({0, 1, 2, 3});
+      break;
+    case kNCHW:
+      axes = std::vector<dim_t>({0, 2, 3, 1});
+      break;
+    case kCHWN:
+      axes = std::vector<dim_t>({3, 1, 2, 0});
+      break;
+    case kNWC:
+      axes = std::vector<dim_t>({0, 1, 2});
+      break;
+    case kNCW:
+      axes = std::vector<dim_t>({0, 2, 1});
+      break;
+    case kCWN:
+      axes = std::vector<dim_t>({2, 1, 0});
+      break;
+    case kNDHWC:
+      axes = std::vector<dim_t>({0, 1, 2, 3, 4});
+      break;
+    case kNCDHW:
+      axes = std::vector<dim_t>({0, 2, 3, 4, 1});
+      break;
+    case kCDHWN:
+      axes = std::vector<dim_t>({4, 1, 2, 3, 0});
+      break;
+    default:
+      LOG(FATAL) << "Invalid source layout " << src_layout;
+  }
+  // transpose from ND?H?WC to `case`
+  switch (dst_layout) {
+    case kUNKNOWN:
+      LOG(FATAL) << "Unknown destination layout";
+      break;
+    case kNHWC:
+      axes = apply(axes, {0, 1, 2, 3});
+      break;
+    case kNCHW:
+      axes = apply(axes, {0, 3, 1, 2});
+      break;
+    case kCHWN:
+      axes = apply(axes, {3, 1, 2, 0});
+      break;
+    case kNWC:
+      axes = apply(axes, {0, 1, 2});
+      break;
+    case kNCW:
+      axes = apply(axes, {0, 2, 1});
+      break;
+    case kCWN:
+      axes = apply(axes, {2, 1, 0});
+      break;
+    case kNDHWC:
+      axes = apply(axes, {0, 1, 2, 3, 4});
+      break;
+    case kNCDHW:
+      axes = apply(axes, {0, 4, 1, 2, 3});
+      break;
+    case kCDHWN:
+      axes = apply(axes, {4, 1, 2, 3, 0});
+      break;
+    default:
+      LOG(FATAL) << "Invalid destination layout " << src_layout;
+  }
+  return axes;
+}
+
+/*!
  * \brief computaion stream structure, used for asynchronous computations
  */
 template<typename Device>
@@ -484,7 +607,7 @@ struct Tensor: public TRValue<Tensor<Device, dimension, DType>,
    * \param idx the dimension count from the highest dimensin
    * \return the size
    */
-  MSHADOW_XINLINE index_t size(index_t idx) const {
+  MSHADOW_XINLINE index_t size(int idx) const {
     return shape_[idx];
   }
   /*!
@@ -817,7 +940,7 @@ inline void SoftmaxGrad(const Tensor<gpu, 2, DType> &dst,
  * \param index index to take
  * \param src source output
  */
-template<typename IndexType, typename DType>
+template<bool clip = true, typename IndexType, typename DType>
 inline void AddTakeGrad(Tensor<cpu, 2, DType> dst,
                         const Tensor<cpu, 1, IndexType>& index,
                         const Tensor<cpu, 2, DType> &src);
@@ -829,7 +952,20 @@ inline void AddTakeGrad(Tensor<cpu, 2, DType> dst,
  * \param index index to take
  * \param src source output
  */
-template<typename IndexType, typename DType>
+template<bool clip = true, typename IndexType, typename DType, typename AType>
+inline void AddTakeGrad(Tensor<cpu, 2, DType> dst,
+                        Tensor<cpu, 2, AType> temp,
+                        const Tensor<cpu, 1, IndexType>& index,
+                        const Tensor<cpu, 2, DType> &src);
+/*!
+ * \brief CPU/GPU: Gradient accumulate of embedding matrix with safe accumulation.
+                   dst[index[i]] += src[i]
+ * \param dst destination
+ * \temp temporal storage for safe accumulation
+ * \param index index to take
+ * \param src source output
+ */
+template<bool clip = true, typename IndexType, typename DType>
 inline void AddTakeGrad(Tensor<gpu, 2, DType> dst,
                         const Tensor<gpu, 1, IndexType>& index,
                         const Tensor<gpu, 2, DType> &src);
@@ -840,6 +976,19 @@ inline void AddTakeGrad(Tensor<gpu, 2, DType> dst,
  * \param dst destination
  * \param sorted the sorted indices
  * \param index original index of the sorted indices
+ * \param src source output
+ */
+template<bool clip = true, typename IndexType, typename DType, typename AType>
+inline void AddTakeGrad(Tensor<gpu, 2, DType> dst,
+                        Tensor<gpu, 2, AType> temp,
+                        const Tensor<gpu, 1, IndexType>& index,
+                        const Tensor<gpu, 2, DType> &src);
+/*!
+ * \brief CPU/GPU: Gradient accumulate of embedding matrix with safe accumulation.
+                   dst[index[i]] += src[i]
+ * \param dst destination
+ * \temp temporal storage for safe accumulation
+ * \param index index to take
  * \param src source output
  */
 template<typename IndexType, typename DType>

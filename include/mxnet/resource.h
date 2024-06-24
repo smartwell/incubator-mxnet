@@ -18,7 +18,6 @@
  */
 
 /*!
- *  Copyright (c) 2015 by Contributors
  * \file resource.h
  * \brief Global resource allocation handling.
  */
@@ -26,6 +25,7 @@
 #define MXNET_RESOURCE_H_
 
 #include <dmlc/logging.h>
+#include <string>
 #include "./base.h"
 #include "./engine.h"
 #include "./random_generator.h"
@@ -62,6 +62,25 @@ struct ResourceRequest {
       : type(type) {}
 };
 
+namespace {
+/// \brief Given a path, extract the filename.
+inline std::string __extract_fname(const std::string& path) {
+  std::size_t last_dir_pos = path.find_last_of("/\\");
+  if (last_dir_pos == std::string::npos) {
+    return path;
+  }
+  return path.substr(last_dir_pos + 1);
+}
+}  // anonymous namespace
+
+#if (defined(__GNUC__) || defined(__GNUG__)) && !defined(__clang__)
+#define MXNET_RESOURCE_DEFAULT_NAME_FARG(tag)                          \
+  std::string(tag) + " (" + __extract_fname(__builtin_FILE()) + " +" + \
+      std::to_string(__builtin_LINE()) + ")"
+#else  // !__GNUC__ || __clang__
+#define MXNET_RESOURCE_DEFAULT_NAME_FARG(tag) \
+  std::string(tag) + " (" + __extract_fname(__FILE__) + " +" + std::to_string(__LINE__) + ")"
+#endif  // __GNUC__ && !__clang__
 
 /*!
  * \brief Resources used by mxnet operations.
@@ -79,7 +98,7 @@ struct Resource {
    * \brief pointer to the resource, do not use directly,
    *  access using member functions
    */
-  void *ptr_;
+  void* ptr_;
   /*! \brief default constructor */
   Resource() : id(0) {}
   /*!
@@ -88,12 +107,10 @@ struct Resource {
    * \return the mshadow random number generator requested.
    * \tparam xpu the device type of random number generator.
    */
-  template<typename xpu, typename DType>
-  inline mshadow::Random<xpu, DType>* get_random(
-      mshadow::Stream<xpu> *stream) const {
+  template <typename xpu, typename DType>
+  inline mshadow::Random<xpu, DType>* get_random(mshadow::Stream<xpu>* stream) const {
     CHECK_EQ(req.type, ResourceRequest::kRandom);
-    mshadow::Random<xpu, DType> *ret =
-        static_cast<mshadow::Random<xpu, DType>*>(ptr_);
+    mshadow::Random<xpu, DType>* ret = static_cast<mshadow::Random<xpu, DType>*>(ptr_);
     ret->set_stream(stream);
     return ret;
   }
@@ -104,7 +121,7 @@ struct Resource {
    * \tparam DType the return type.
    * \return the parallel random number generator. for gpu, it is allocated on global memory.
    */
-  template<typename xpu, typename DType>
+  template <typename xpu, typename DType>
   inline common::random::RandGenerator<xpu, DType>* get_parallel_random() const {
     CHECK_EQ(req.type, ResourceRequest::kParallelRandom);
     return static_cast<common::random::RandGenerator<xpu, DType>*>(ptr_);
@@ -120,16 +137,19 @@ struct Resource {
    *  when running on device, so the launched kernels that depend on the temp space
    *  can finish correctly.
    *
-   * \param shape the Shape of returning tensor.
-   * \param stream the stream of retruning tensor.
+   * \param shape   the shape of returning tensor.
+   * \param stream  the stream of returning tensor.
+   * \param name    the name of the operator requesting the resource.
    * \return the mshadow tensor requested.
-   * \tparam xpu the device type of random number generator.
-   * \tparam ndim the number of dimension of the tensor requested.
+   * \tparam xpu   the device type of random number generator.
+   * \tparam ndim  the number of dimension of the tensor requested.
    */
-  template<typename xpu, int ndim>
+  template <typename xpu, int ndim>
   inline mshadow::Tensor<xpu, ndim, real_t> get_space(
-      mshadow::Shape<ndim> shape, mshadow::Stream<xpu> *stream) const {
-    return get_space_typed<xpu, ndim, real_t>(shape, stream);
+      mshadow::Shape<ndim> shape,
+      mshadow::Stream<xpu>* stream,
+      const std::string& name = MXNET_RESOURCE_DEFAULT_NAME_FARG("temp_space")) const {
+    return get_space_typed<xpu, ndim, real_t>(shape, stream, name);
   }
   /*!
    * \brief Get cpu space requested as mshadow Tensor.
@@ -139,42 +159,48 @@ struct Resource {
    * \return the mshadow tensor requested.
    * \tparam ndim the number of dimension of the tensor requested.
    */
-  template<int ndim>
-  inline mshadow::Tensor<cpu, ndim, real_t> get_host_space(
-      mshadow::Shape<ndim> shape) const {
+  template <int ndim>
+  inline mshadow::Tensor<cpu, ndim, real_t> get_host_space(mshadow::Shape<ndim> shape) const {
     return get_host_space_typed<cpu, ndim, real_t>(shape);
   }
   /*!
    * \brief Get space requested as mshadow Tensor in specified type.
    *  The caller can request arbitrary size.
    *
-   * \param shape the Shape of returning tensor.
-   * \param stream the stream of retruning tensor.
+   * \param shape   the shape of returning tensor.
+   * \param stream  the stream of returning tensor.
+   * \param name    the name of the operator requesting the resource.
    * \return the mshadow tensor requested.
-   * \tparam xpu the device type of random number generator.
-   * \tparam ndim the number of dimension of the tensor requested.
+   * \tparam xpu   the device type of random number generator.
+   * \tparam ndim  the number of dimension of the tensor requested.
    */
-  template<typename xpu, int ndim, typename DType>
+  template <typename xpu, int ndim, typename DType>
   inline mshadow::Tensor<xpu, ndim, DType> get_space_typed(
-      mshadow::Shape<ndim> shape, mshadow::Stream<xpu> *stream) const {
+      mshadow::Shape<ndim> shape,
+      mshadow::Stream<xpu>* stream,
+      const std::string& name = MXNET_RESOURCE_DEFAULT_NAME_FARG("temp_space")) const {
     CHECK_EQ(req.type, ResourceRequest::kTempSpace);
     return mshadow::Tensor<xpu, ndim, DType>(
-        reinterpret_cast<DType*>(get_space_internal(shape.Size() * sizeof(DType))),
-        shape, shape[ndim - 1], stream);
+        reinterpret_cast<DType*>(get_space_internal(shape.Size() * sizeof(DType), name)),
+        shape,
+        shape[ndim - 1],
+        stream);
   }
 #if MXNET_USE_CUDNN == 1
   /*!
-   * \brief Get cudnn dropout descriptor from shared state space.
+   * \brief Get cuDNN dropout descriptor from shared state space.
    *
-   * \param dropout_desc reference to previously created cudnn dropout descriptor.
-   * \param stream the stream of retruning tensor.
+   * \param dropout_desc  reference to previously created cuDNN dropout descriptor.
+   * \param stream  the stream of returning tensor.
+   * \param dropout the ratio of inputs to keep.
+   * \param name    the name of the operator requesting the resource.
    * \return the mshadow tensor requested.
    */
   void get_cudnn_dropout_desc(
       cudnnDropoutDescriptor_t* dropout_desc,
-      mshadow::Stream<gpu> *stream,
+      mshadow::Stream<gpu>* stream,
       const float dropout,
-      uint64_t seed) const;
+      const std::string& name = MXNET_RESOURCE_DEFAULT_NAME_FARG("cudnn_dropout_state")) const;
 #endif  // MXNET_USE_CUDNN == 1
 
   /*!
@@ -186,25 +212,27 @@ struct Resource {
    * \tparam ndim the number of dimnesion of tensor requested
    * \tparam DType request data type
    */
-  template<int ndim, typename DType>
-  inline mshadow::Tensor<cpu, ndim, DType> get_host_space_typed(
-    mshadow::Shape<ndim> shape) const {
-      return mshadow::Tensor<cpu, ndim, DType>(
+  template <int ndim, typename DType>
+  inline mshadow::Tensor<cpu, ndim, DType> get_host_space_typed(mshadow::Shape<ndim> shape) const {
+    return mshadow::Tensor<cpu, ndim, DType>(
         reinterpret_cast<DType*>(get_host_space_internal(shape.Size() * sizeof(DType))),
-        shape, shape[ndim - 1], NULL);
+        shape,
+        shape[ndim - 1],
+        nullptr);
   }
   /*!
    * \brief internal function to get space from resources.
-   * \param size The size of the space.
+   * \param size the Size of the space.
+   * \param name the Name of the operator requesting the resource.
    * \return The allocated space.
    */
-  void* get_space_internal(size_t size) const;
+  void* get_space_internal(size_t size, const std::string& name) const;
   /*!
    * \brief internal function to get cpu space from resources.
    * \param size The size of space.
    * \return The allocated space
    */
-  void *get_host_space_internal(size_t size) const;
+  void* get_host_space_internal(size_t size) const;
 };
 
 /*! \brief Global resource manager */
@@ -218,7 +246,7 @@ class ResourceManager {
    * \note The returned resource's ownership is
    *       still hold by the manager singleton.
    */
-  virtual Resource Request(Context ctx, const ResourceRequest &req) = 0;
+  virtual Resource Request(Context ctx, const ResourceRequest& req) = 0;
   /*!
    * \brief Seed all the allocated random number generators.
    * \param seed the seed to the random number generators on all devices.
@@ -234,7 +262,7 @@ class ResourceManager {
   /*!
    * \return Resource manager singleton.
    */
-  static ResourceManager *Get();
+  static ResourceManager* Get();
 };
 }  // namespace mxnet
 #endif  // MXNET_RESOURCE_H_

@@ -158,7 +158,7 @@ NDArray ResizeInput(NDArray data, const Shape new_shape) {
 
 int main(int argc, char const *argv[]) {
   int batch_size = 40;
-  int max_epoch = argc > 1 ? strtol(argv[1], NULL, 10) : 100;
+  int max_epoch = argc > 1 ? strtol(argv[1], nullptr, 10) : 100;
   float learning_rate = 1e-2;
   float weight_decay = 1e-4;
 
@@ -166,7 +166,7 @@ int main(int argc, char const *argv[]) {
   auto ctx = Context::cpu();
   int num_gpu;
   MXGetGPUCount(&num_gpu);
-#if !MXNET_USE_CPU
+#if MXNET_USE_CUDA
   if (num_gpu > 0) {
     ctx = Context::gpu();
   }
@@ -200,9 +200,9 @@ int main(int argc, char const *argv[]) {
   }
 
   // initialize parameters
-  Xavier xavier = Xavier(Xavier::gaussian, Xavier::in, 2);
-  for (auto &arg : args_map) {
-    xavier(arg.first, &arg.second);
+  auto initializer = Uniform(0.07);
+  for (auto& arg : args_map) {
+    initializer(arg.first, &arg.second);
   }
 
   Optimizer* opt = OptimizerRegistry::Find("sgd");

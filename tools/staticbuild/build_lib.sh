@@ -17,47 +17,40 @@
 # specific language governing permissions and limitations
 # under the License.
 
+set -eo pipefail
+
 # This script builds the libraries of mxnet.
-make_config=make/${STATIC_BUILD_TARGET}/${STATIC_BUILD_TARGET}_${PLATFORM}_${VARIANT}.mk
-if [[ ! -f $make_config ]]; then
-    >&2 echo "Couldn't find make config $make_config for the current settings."
+if [[ ! $BLAS ]] || [[ $BLAS == 'open' ]]; then
+    cmake_config=${CURDIR}/config/distribution/${PLATFORM}_${VARIANT}.cmake
+else
+    cmake_config=${CURDIR}/config/distribution/${PLATFORM}_${VARIANT}_${BLAS}.cmake
+fi
+if [[ ! -f $cmake_config ]]; then
+    >&2 echo "Couldn't find cmake config $make_config for the current settings."
     exit 1
 fi
 
->&2 echo "Now building mxnet modules..."
-cp $make_config config.mk
-
 git submodule update --init --recursive || true
 
-$MAKE DEPS_PATH=$DEPS_PATH DMLCCORE
-$MAKE DEPS_PATH=$DEPS_PATH $PWD/3rdparty/tvm/nnvm/lib/libnnvm.a
-$MAKE DEPS_PATH=$DEPS_PATH PSLITE
+# Build libmxnet.so
+rm -rf build; mkdir build; cd build
+cmake -GNinja -C $cmake_config \
+      -DCMAKE_PREFIX_PATH=${DEPS_PATH} \
+      -DCMAKE_FIND_ROOT_PATH=${DEPS_PATH} \
+      -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 \
+      ..
+ninja
+cd -
 
-if [[ $VARIANT == *mkl ]]; then
-    if [[ $PLATFORM == 'linux' ]]; then
-        IOMP_LIBFILE='libiomp5.so'
-        MKLML_LIBFILE='libmklml_intel.so'
-        MKLDNN_LIBFILE='libmkldnn.so.0'
-    else
-        IOMP_LIBFILE='libiomp5.dylib'
-        MKLML_LIBFILE='libmklml.dylib'
-        MKLDNN_LIBFILE='libmkldnn.0.dylib'
-    fi
-    $MAKE DEPS_PATH=$DEPS_PATH mkldnn
-    if [ ! -d lib ]; then
-        mkdir lib
-    fi
-    cp 3rdparty/mkldnn/build/install/lib/$IOMP_LIBFILE lib
-    cp 3rdparty/mkldnn/build/install/lib/$MKLML_LIBFILE lib
-    cp 3rdparty/mkldnn/build/install/lib/$MKLDNN_LIBFILE lib
-fi
-
->&2 echo "Now building mxnet..."
-$MAKE DEPS_PATH=$DEPS_PATH
-
+# Move to lib
+rm -rf lib; mkdir lib;
 if [[ $PLATFORM == 'linux' ]]; then
-    cp -L /usr/lib/gcc/x86_64-linux-gnu/4.8/libgfortran.so lib/libgfortran.so.3
-    cp -L /usr/lib/x86_64-linux-gnu/libquadmath.so.0 lib/libquadmath.so.0
+    cp -L build/libmxnet.so lib/libmxnet.so
+    if [[ $BLAS == 'open' ]]; then
+        cp -L $(ldd lib/libmxnet.so | grep libgfortran |  awk '{print $3}') lib/
+    fi
+elif [[ $PLATFORM == 'darwin' ]]; then
+    cp -L build/libmxnet.dylib lib/libmxnet.dylib
 fi
 
 # Print the linked objects on libmxnet.so
@@ -66,10 +59,12 @@ if [[ ! -z $(command -v readelf) ]]; then
     readelf -d lib/libmxnet.so
     strip --strip-unneeded lib/libmxnet.so
 elif [[ ! -z $(command -v otool) ]]; then
-    otool -L lib/libmxnet.so
-    strip -u -r -x lib/libmxnet.so
+    otool -L lib/libmxnet.dylib
+    strip -u -r -x lib/libmxnet.dylib
 else
     >&2 echo "Not available"
 fi
 
-ln -s staticdeps/ deps
+if [[ ! -L deps ]]; then
+    ln -s staticdeps deps
+fi

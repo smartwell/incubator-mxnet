@@ -17,8 +17,6 @@
 
 # coding: utf-8
 """Autograd for NDArray."""
-from __future__ import absolute_import
-from __future__ import division
 
 from array import array
 from threading import Lock
@@ -30,6 +28,7 @@ from .base import NDArrayHandle, c_array, c_handle_array, c_array_buf, MXCallbac
 from .ndarray import NDArray, _ndarray_cls
 from .ndarray import _GRAD_REQ_MAP
 from .symbol import Symbol
+from .util import is_np_array
 
 
 def set_recording(is_recording): #pylint: disable=redefined-outer-name
@@ -235,8 +234,8 @@ def _parse_head(heads, head_grads):
     if head_grads is None:
         hgrad_handles = ctypes.c_void_p(0)
     else:
-        assert len(heads) == len(head_grads), \
-            "heads and head_grads must be lists of the same length"
+        msg = "heads and head_grads must be lists of the same length: {} vs. {}"
+        assert len(heads) == len(head_grads), msg.format(len(heads), len(head_grads))
         hgrad_handles = c_array(NDArrayHandle,
                                 [i.handle if i is not None else NDArrayHandle(0)
                                  for i in head_grads])
@@ -360,6 +359,8 @@ def get_symbol(x):
     Symbol
         The retrieved Symbol.
     """
+    assert isinstance(x, NDArray), \
+       f"get_symbol: Invalid argument type, expecting {NDArray}, got {type(x)}"
     hdl = SymbolHandle()
     check_call(_LIB.MXAutogradGetSymbol(x.handle, ctypes.byref(hdl)))
     return Symbol(hdl)
@@ -448,26 +449,31 @@ class Function(object):
             outputs = (outputs,)
 
         key = Function._registry.inc()
+        if is_np_array():
+            from .numpy import ndarray
+            array_cls = ndarray
+        else:
+            array_cls = NDArray
 
         def backward_entry(num_ograds, num_igrads, ptrs, reqs, is_train, _):
             """entry point for backward."""
             # pylint: disable=W0613
             try:
-                output_grads = [NDArray(ctypes.cast(i, NDArrayHandle), writable=False) \
+                output_grads = [array_cls(ctypes.cast(i, NDArrayHandle), writable=False) \
                                 for i in ptrs[:num_ograds]]
-                input_grads = [NDArray(ctypes.cast(i, NDArrayHandle), writable=True) \
+                input_grads = [array_cls(ctypes.cast(i, NDArrayHandle), writable=True) \
                                for i in ptrs[num_ograds:num_ograds+num_igrads]]
                 reqs = [reqs[i] for i in range(num_igrads)]
                 rets = self.backward(*output_grads)
-                if isinstance(rets, NDArray):
+                if isinstance(rets, array_cls):
                     rets = (rets,)
                 assert len(rets) == len(input_grads), \
-                    "%s.backward must return exactly the same number " \
+                    f"{self.__class__.name}.backward must return exactly the same number " \
                     "of NDArrays as the number of NDArrays arguments to forward." \
-                    "Expecting %d got %d"%(self.__class__.name, len(input_grads), len(rets))
+                    f"Expecting {len(input_grads)} got {len(rets)}"
                 for igrad, ret, req in zip(input_grads, rets, reqs):
-                    assert isinstance(ret, NDArray), \
-                        "autograd.Function.backward must return NDArrays, not %s"%type(ret)
+                    assert isinstance(ret, array_cls), \
+                        f"autograd.Function.backward must return NDArrays, not {type(ret)}"
                     if req == 0:  # null
                         return True
                     elif req in (1, 2):  # write or inplace
@@ -475,7 +481,7 @@ class Function(object):
                     elif req == 'add':
                         igrad[:] += ret
             except Exception:  # pylint: disable=broad-except
-                print('Error in Function.backward: %s' % traceback.format_exc())
+                print(f'Error in Function.backward: {traceback.format_exc()}')
                 return False
             return True
 
@@ -484,7 +490,7 @@ class Function(object):
             try:
                 del Function._registry.ref_holder[key]
             except Exception:  # pylint: disable=broad-except
-                print('Error in autograd.Function.delete: %s' % traceback.format_exc())
+                print(f'Error in autograd.Function.delete: {traceback.format_exc()}')
                 return False
             return True
 

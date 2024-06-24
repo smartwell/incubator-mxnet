@@ -30,31 +30,15 @@ except ImportError:
     from urllib2 import urlopen
 import argparse
 
-def parse_args():
-    """Parse arguments."""
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description='Diagnose script for checking the current system.')
-    choices = ['python', 'pip', 'mxnet', 'os', 'hardware', 'network']
-    for choice in choices:
-        parser.add_argument('--' + choice, default=1, type=int,
-                            help='Diagnose {}.'.format(choice))
-    parser.add_argument('--region', default='', type=str,
-                        help="Additional sites in which region(s) to test. \
-                        Specify 'cn' for example to test mirror sites in China.")
-    parser.add_argument('--timeout', default=10, type=int,
-                        help="Connection test timeout threshold, 0 to disable.")
-    args = parser.parse_args()
-    return args
-
 URLS = {
-    'MXNet': 'https://github.com/apache/incubator-mxnet',
+    'MXNet': 'https://github.com/apache/mxnet',
     'Gluon Tutorial(en)': 'http://gluon.mxnet.io',
     'Gluon Tutorial(cn)': 'https://zh.gluon.ai',
     'FashionMNIST': 'https://apache-mxnet.s3-accelerate.dualstack.amazonaws.com/gluon/dataset/fashion-mnist/train-labels-idx1-ubyte.gz',
     'PYPI': 'https://pypi.python.org/pypi/pip',
     'Conda': 'https://repo.continuum.io/pkgs/free/',
 }
+
 REGIONAL_URLS = {
     'cn': {
         'PYPI(douban)': 'https://pypi.douban.com/',
@@ -81,6 +65,7 @@ def test_connection(name, url, timeout=10):
     load_elapsed = time.time() - start
     print("Timing for {}: {}, DNS: {:.4f} sec, LOAD: {:.4f} sec.".format(name, url, dns_elapsed, load_elapsed))
 
+
 def check_python():
     print('----------Python Info----------')
     print('Version      :', platform.python_version())
@@ -97,10 +82,12 @@ def check_pip():
     except ImportError:
         print('No corresponding pip install for current python.')
 
+
 def get_build_features_str():
     import mxnet.runtime
     features = mxnet.runtime.Features()
     return '\n'.join(map(str, list(features.values())))
+
 
 def check_mxnet():
     print('----------MXNet Info-----------')
@@ -109,18 +96,24 @@ def check_mxnet():
         print('Version      :', mxnet.__version__)
         mx_dir = os.path.dirname(mxnet.__file__)
         print('Directory    :', mx_dir)
-        commit_hash = os.path.join(mx_dir, 'COMMIT_HASH')
-        if os.path.exists(commit_hash):
-            with open(commit_hash, 'r') as f:
-                ch = f.read().strip()
-                print('Commit Hash   :', ch)
-        else:
-            print('Commit hash file "{}" not found. Not installed from pre-built package or built from source.'.format(commit_hash))
+        try:
+            branch = mxnet.runtime.get_branch()
+            commit_hash = mxnet.runtime.get_commit_hash()
+            print('Branch       :', branch)
+            print('Commit Hash  :', commit_hash)
+        except AttributeError:
+            commit_hash = os.path.join(mx_dir, 'COMMIT_HASH')
+            if os.path.exists(commit_hash):
+                with open(commit_hash, 'r') as f:
+                    ch = f.read().strip()
+                    print('Commit Hash   :', ch)
+            else:
+                print('Commit hash file "{}" not found. Not installed from pre-built package or built from source.'.format(commit_hash))
         print('Library      :', mxnet.libinfo.find_lib_path())
         try:
             print('Build features:')
             print(get_build_features_str())
-        except Exception:
+        except (AttributeError, ModuleNotFoundError):
             print('No runtime build feature info available')
     except ImportError:
         print('No MXNet installed.')
@@ -131,6 +124,7 @@ def check_mxnet():
             print("This is very likely due to missing missing or incompatible library files.")
         print(traceback.format_exc())
 
+
 def check_os():
     print('----------System Info----------')
     print('Platform     :', platform.platform())
@@ -138,6 +132,7 @@ def check_os():
     print('node         :', platform.node())
     print('release      :', platform.release())
     print('version      :', platform.version())
+
 
 def check_hardware():
     print('----------Hardware Info----------')
@@ -153,6 +148,7 @@ def check_hardware():
         subprocess.call(['lscpu'])
     elif sys.platform.startswith('win32'):
         subprocess.call(['wmic', 'cpu', 'get', 'name'])
+
 
 def check_network(args):
     print('----------Network Test----------')
@@ -170,6 +166,32 @@ def check_network(args):
             warnings.warn('Region {} do not need specific test, please refer to global sites.'.format(r))
     for name, url in URLS.items():
         test_connection(name, url, args.timeout)
+
+
+def check_environment():
+    print('----------Environment----------')
+    for k,v in os.environ.items():
+        if k.startswith('MXNET_') or k.startswith('OMP_') or k.startswith('KMP_') or k == 'CC' or k == 'CXX':
+            print('{}="{}"'.format(k,v))
+
+
+def parse_args():
+    """Parse arguments."""
+    parser = argparse.ArgumentParser(
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description='Diagnose script for checking the current system.')
+    choices = ['python', 'pip', 'mxnet', 'os', 'hardware', 'network', 'environment']
+    for choice in choices:
+        parser.add_argument('--' + choice, default=1, type=int,
+                            help='Diagnose {}.'.format(choice))
+    parser.add_argument('--region', default='', type=str,
+                        help="Additional sites in which region(s) to test. \
+                        Specify 'cn' for example to test mirror sites in China.")
+    parser.add_argument('--timeout', default=10, type=int,
+                        help="Connection test timeout threshold, 0 to disable.")
+    args = parser.parse_args()
+    return args
+
 
 if __name__ == '__main__':
     args = parse_args()
@@ -190,3 +212,6 @@ if __name__ == '__main__':
 
     if args.network:
         check_network(args)
+
+    if args.environment:
+        check_environment()

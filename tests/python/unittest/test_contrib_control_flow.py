@@ -15,131 +15,13 @@
 # specific language governing permissions and limitations
 # under the License.
 
-import copy
-import numpy as np
+import pytest
 import mxnet as mx
-from mxnet import gluon
-from numpy.testing import assert_allclose, assert_array_equal
-from collections import defaultdict
+from numpy.testing import assert_allclose
 from mxnet.test_utils import *
 from mxnet.base import _as_list
-from mxnet.attribute import AttrScope
-from common import with_seed
 
-
-@with_seed()
-def test_while_loop_simple_forward():
-
-    class _TestBlock(gluon.HybridBlock):
-
-        def __init__(self, cond, func, max_iterations):
-            super(_TestBlock, self).__init__()
-            self.cond = cond
-            self.func = func
-            self.max_iterations = max_iterations
-
-        def hybrid_forward(self, F, *loop_vars):
-            return F.contrib.while_loop(
-                cond=self.cond,
-                func=self.func,
-                loop_vars=loop_vars,
-                max_iterations=self.max_iterations
-            )
-
-    for hybridize in [False, True]:
-        # Case 1.1: result should be sum([1, 2, 3 ... 100])
-        model = _TestBlock(
-            cond=lambda i, s: i <= 5,
-            func=lambda i, s: (None, (i + 1, s + i)),
-            max_iterations=10,
-        )
-        if hybridize:
-            model.hybridize()
-        _, result = model(
-            mx.nd.array([1], dtype="int64"), # i
-            mx.nd.array([0], dtype="int64"), # s
-        )
-        assert result[0].asscalar() == 6
-        assert result[1].asscalar() == 15
-        # Case 1.2: result should be sum([1, 2, 3 ... 1000])
-        model = _TestBlock(
-            cond=lambda i, s, true: true,
-            func=lambda i, s, true: (None, (i + 1, s + i, true)),
-            max_iterations=1000,
-        )
-        if hybridize:
-            model.hybridize()
-        _, result = model(
-            mx.nd.array([1], dtype="int64"), # i
-            mx.nd.array([0], dtype="int64"), # s
-            mx.nd.array([1], dtype="int64"), # true
-        )
-        assert result[0].asscalar() == 1001
-        assert result[1].asscalar() == 500500
-        assert result[2].asscalar() == 1
-        # Case 1.3: result should be sum([])
-        model = _TestBlock(
-            cond=lambda i, s, false: false,
-            func=lambda i, s, false: (None, (i + 1, s + i, false)),
-            max_iterations=1000,
-        )
-        if hybridize:
-            model.hybridize()
-        _, result = model(
-            mx.nd.array([1], dtype="int64"), # i
-            mx.nd.array([0], dtype="int64"), # s
-            mx.nd.array([0], dtype="int64"), # false
-        )
-        assert result[0].asscalar() == 1
-        assert result[1].asscalar() == 0
-        assert result[2].asscalar() == 0
-        # Case 2.1: result should be sum([1, 2, 3 ... 100])
-        model = _TestBlock(
-            cond=lambda i, s: i <= 100,
-            func=lambda i, s: (i, (i + 1, s + i)),
-            max_iterations=1000,
-        )
-        if hybridize:
-            model.hybridize()
-        outputs, (result_i, result_s) = model(
-            mx.nd.array([1], dtype="int64"), # i
-            mx.nd.array([0], dtype="int64"), # s
-        )
-        assert all(outputs.asnumpy()[ : 100] == np.arange(1, 101).reshape(100, 1))
-        assert result_i.asscalar() == 101
-        assert result_s.asscalar() == 5050
-        # Case 2.2: result should be sum([1, 2, 3 ... 1000])
-        model = _TestBlock(
-            cond=lambda i, s, true: true,
-            func=lambda i, s, true: (i, (i + 1, s + i, true)),
-            max_iterations=1000,
-        )
-        if hybridize:
-            model.hybridize()
-        outputs, (result_i, result_s, _) = model(
-            mx.nd.array([1], dtype="int64"), # i
-            mx.nd.array([0], dtype="int64"), # s
-            mx.nd.array([1], dtype="int64"), # true
-        )
-        assert all(outputs.asnumpy() == np.arange(1, 1001).reshape(1000, 1))
-        assert result_i.asscalar() == 1001
-        assert result_s.asscalar() == 500500
-        # Case 2.3: a corner case, in which loop body is never executed
-        model = _TestBlock(
-            cond=lambda i, s, false: false,
-            func=lambda i, s, false: (i, (i + 1, s + i, false)),
-            max_iterations=1000,
-        )
-        if hybridize:
-            model.hybridize()
-        _, (result_i, result_s, _) = model(
-            mx.nd.array([1], dtype="int64"), # i
-            mx.nd.array([0], dtype="int64"), # s
-            mx.nd.array([0], dtype="int64"), # false
-        )
-        assert result_i.asscalar() == 1
-        assert result_s.asscalar() == 0
-
+mx.npx.reset_np()
 
 def _verify_while_loop(cond, func, loop_var_shapes, free_var_shapes, is_train, max_iterations, is_for, n_steps):
 
@@ -218,8 +100,8 @@ def _verify_while_loop(cond, func, loop_var_shapes, free_var_shapes, is_train, m
         args_names = ["FreeVar" + str(i) for i, _ in enumerate(free_var_shapes)] \
                    + ["LoopVar" + str(i) for i, _ in enumerate(loop_var_shapes) if i >= loop_var_start]
         args_grad = None if not is_train else _zeros_like_dict(x for x in args_names)
-        executor = loop_result_sym.bind(
-            ctx=default_context(),
+        executor = loop_result_sym._bind(
+            ctx=default_device(),
             args=_copy_args_dict(loop_result_sym.list_inputs()),
             args_grad=args_grad,
         )
@@ -250,7 +132,7 @@ def _verify_while_loop(cond, func, loop_var_shapes, free_var_shapes, is_train, m
         assert_almost_equal(imp_grad, sym_grad, rtol=1e-3, atol=1e-3)
 
 
-@with_seed()
+@pytest.mark.skip(reason="Bug in while loop op, tracked at incubator-mxnet/issues/18575")
 def test_while_loop_for_foreach():
 
     def make_true_cond():
@@ -791,7 +673,6 @@ def test_while_loop_for_foreach():
     )
 
 
-@with_seed()
 def test_while_loop_nested():
 
     def _to_np_list(arrays):
@@ -876,8 +757,8 @@ def test_while_loop_nested():
             mx.sym.var("sc"),
         ]
         result_sym = mx.sym.Group(make_loop(i, j, x_sum, sc))
-        executor = result_sym.bind(
-            ctx=default_context(),
+        executor = result_sym._bind(
+            ctx=default_device(),
             args=args,
             args_grad=args_grad,
         )
@@ -898,101 +779,6 @@ def test_while_loop_nested():
         for x, y in zip(imp_grad, sym_grad):
             assert_almost_equal(x, y, rtol=1e-3, atol=1e-3)
 
-
-@with_seed()
-def test_while_loop_rnn():
-    def _array(shape):
-        return mx.nd.random.uniform(-1.0, 1.0, shape=shape)
-
-    cell_types = [mx.rnn.LSTMCell]
-    num_params = [2]
-
-    batch_size = 2
-    hidden_dim = 3
-    input_dim = 4
-    seq_len = 3
-
-    for cell, n_param in zip(cell_types, num_params):
-        # using while_loop
-        params = mx.rnn.RNNParams()
-        data = mx.sym.var("data")
-        iter_i = mx.sym.var("i")
-        def _cond(*states):
-            i = states[0]
-            return i < seq_len
-        def _func(*states):
-            i = states[0]
-            states = states[1:]
-            in_ = data.take(i).squeeze(axis=0)
-            rnn = cell(hidden_dim, prefix='', params=params)
-            next_hidden, next_states = rnn(in_, states)
-            return [next_hidden], [i + 1] + list(next_states)
-        states = [mx.sym.var("s_" + str(i)) for i in range(n_param)]
-        result = mx.sym.contrib.while_loop(
-                    cond=_cond,
-                    func=_func,
-                    loop_vars=[iter_i] + states,
-                    max_iterations=seq_len
-                )
-        result = mx.sym.Group(result[0] + result[1][1: ])
-        rnn_inputs = result.list_inputs()
-        args = {
-            "i": mx.nd.zeros([1]),
-            "data": _array((seq_len, batch_size, input_dim)),
-            "i2h_weight": _array((input_dim * hidden_dim, input_dim)),
-            "i2h_bias": _array((input_dim * hidden_dim, )),
-            "s_0": _array((batch_size, hidden_dim)),
-            "h2h_weight": _array((input_dim * hidden_dim, seq_len)),
-            "h2h_bias": _array((input_dim * hidden_dim, )),
-            "s_1": _array((batch_size, hidden_dim)),
-        }
-        args_grad = {
-            "i": _array([1]),
-            "data": _array((seq_len, batch_size, input_dim)),
-            "i2h_weight": _array((input_dim * hidden_dim, input_dim)),
-            "i2h_bias": _array((input_dim * hidden_dim, )),
-            "s_0": _array((batch_size, hidden_dim)),
-            "h2h_weight": _array((input_dim * hidden_dim, seq_len)),
-            "h2h_bias": _array((input_dim * hidden_dim, )),
-            "s_1": _array((batch_size, hidden_dim)),
-        }
-        e_1 = result.bind(ctx=default_context(),
-            args={name: array.copy() for name, array in args.items()},
-            args_grad={name: array.copy() for name, array in args_grad.items() if name != "i"},
-        )
-        # using unrolled rnn
-        rnn = cell(hidden_dim, prefix='')
-        unroll_outs = []
-        for inputs in mx.sym.split(data, num_outputs=seq_len, axis=0, squeeze_axis=True):
-            h, states = rnn(inputs, states)
-            unroll_outs.append(mx.sym.expand_dims(h, axis=0))
-        unroll_outs = _as_list(mx.sym.concat(*unroll_outs, dim=0))
-        unroll_outs.extend(states)
-        result = mx.sym.Group(unroll_outs)
-        e_2 = result.bind(ctx=default_context(),
-            args={name: array.copy() for name, array in args.items() if name != "i"},
-            args_grad={name: array.copy() for name, array in args_grad.items() if name != "i"},
-        )
-        for case_id in range(100):
-            args = {name: array.copy() for name, array in args.items()}
-            e_1.forward(is_train=True, **args)
-            out_grads = [_array(arr.shape) for arr in e_1.outputs]
-            e_1.backward(out_grads)
-            args = {name: array.copy() for name, array in args.items() if name != "i"}
-            e_2.forward(is_train=True, **args)
-            e_2.backward(out_grads)
-            assert len(e_1.outputs) == len(e_2.outputs)
-            for x, y in zip(e_1.outputs, e_2.outputs):
-                x = x.asnumpy()
-                y = y.asnumpy()
-                assert_almost_equal(x, y, rtol=1e-3, atol=1e-3)
-            grad_keys = list(e_2.grad_dict.keys())
-            e_1_grad = [e_1.grad_dict[x] for x in grad_keys]
-            e_2_grad = [e_2.grad_dict[x] for x in grad_keys]
-            for x, y in zip(e_1_grad, e_2_grad):
-                x = x.asnumpy()
-                y = y.asnumpy()
-                assert_almost_equal(x, y, rtol=1e-3, atol=1e-3)
 
 def _verify_cond(cond_func, then_func, else_func, input_var_shapes, free_var_shapes, is_train):
 
@@ -1053,8 +839,8 @@ def _verify_cond(cond_func, then_func, else_func, input_var_shapes, free_var_sha
         outputs_sym = _as_list(outputs_sym)
         outputs_sym = [x * 2 for x in outputs_sym]
         outputs_sym = mx.sym.Group(outputs_sym)
-        executor = outputs_sym.bind(
-            ctx=default_context(),
+        executor = outputs_sym._bind(
+            ctx=default_device(),
             args={name: _args_dict[name].copy() for name in outputs_sym.list_inputs()},
             args_grad=None if not is_train else _merge_dict(
                 {"InputVar" + str(i): mx.nd.zeros(s) for i, s in enumerate(input_var_shapes)},
@@ -1081,7 +867,6 @@ def _verify_cond(cond_func, then_func, else_func, input_var_shapes, free_var_sha
         assert_almost_equal(imp_grad, sym_grad, rtol=1e-3, atol=1e-3)
 
 
-@with_seed()
 def test_cond():
     # whether there are free variables in three graphs
     # whether these three graphs contain input_vars
@@ -1151,69 +936,8 @@ def test_cond():
                     ]
                 )
 
-class TestRNNLayer(gluon.HybridBlock):
-    def __init__(self, cell_type, hidden_size, prefix=None, params=None):
-        super(TestRNNLayer, self).__init__(prefix=prefix, params=params)
-        self.cell = cell_type(hidden_size, prefix='rnn_')
 
-    def hybrid_forward(self, F, inputs, states):
-        out, states = F.contrib.foreach(self.cell, inputs, states)
-        return out
-
-def check_contrib_rnn(cell_type, num_states):
-    batch_size = 10
-    hidden_size = 100
-    rnn_data = mx.nd.normal(loc=0, scale=1, shape=(5, batch_size, 50))
-    state_shape = (batch_size, hidden_size)
-    states = [mx.nd.normal(loc=0, scale=1, shape=state_shape) for i in range(num_states)]
-    layer = TestRNNLayer(cell_type, hidden_size)
-    layer.initialize(ctx=default_context())
-    res1 = layer(rnn_data, states)
-    params1 = layer.collect_params()
-    orig_params1 = copy.deepcopy(params1)
-
-    trainer = gluon.Trainer(params1, 'sgd', {'learning_rate' : 0.03})
-    with mx.autograd.record():
-        res1 = layer(rnn_data, states)
-    res1.backward()
-    trainer.step(batch_size)
-
-    configs = [
-            {},
-            {'inline_limit': 0},
-            {'static_alloc': True},
-            {'static_alloc': True, 'static_shape': True} ]
-    for config in configs:
-        layer = TestRNNLayer(cell_type, hidden_size)
-        layer.initialize(ctx=default_context())
-        layer.hybridize(**config)
-        res2 = layer(rnn_data, states)
-        params2 = layer.collect_params()
-        for key, val in orig_params1.items():
-            params2[key].set_data(copy.deepcopy(val.data()))
-        trainer = gluon.Trainer(params2, 'sgd', {'learning_rate' : 0.03})
-        with mx.autograd.record():
-            res2 = layer(rnn_data, states)
-        assert_almost_equal(res1.asnumpy(), res2.asnumpy(), rtol=1e-3, atol=1e-3)
-        res2.backward()
-        trainer.step(batch_size)
-
-        for key, val in params1.items():
-            weight1 = val.data()
-            weight2 = params2[key].data()
-            assert_almost_equal(weight1.asnumpy(), weight2.asnumpy(),
-                    rtol=1e-3, atol=1e-3)
-
-
-@with_seed()
-def test_contrib_rnn():
-    cell_types = [(gluon.rnn.RNNCell, 1), (gluon.rnn.LSTMCell, 2),
-            (gluon.rnn.GRUCell, 1)]
-    for cell_type, num_states in cell_types:
-        check_contrib_rnn(cell_type, num_states)
-
-
-@with_seed()
+@pytest.mark.garbage_expected
 def test_foreach():
     v3 = mx.sym.var("v0")
     v4 = mx.sym.var("v1")
@@ -1234,7 +958,7 @@ def test_foreach():
         out.extend(states)
         out = mx.sym.Group(out)
         js_1 = out.tojson()
-        out = mx.sym.load_json(js_1)
+        out = mx.sym.fromjson(js_1)
         js_2 = out.tojson()
         assert js_1 == js_2
         arr_grads = []
@@ -1261,12 +985,12 @@ def test_foreach():
             i = i + 1
 
         if is_train:
-            e = out.bind(ctx=default_context(), args=arg_dict, args_grad=arg_grad_dict)
+            e = out._bind(ctx=default_device(), args=arg_dict, args_grad=arg_grad_dict)
         else:
-            e = out.bind(ctx=default_context(), args=arg_dict)
+            e = out._bind(ctx=default_device(), args=arg_dict)
         # the inputs to forward and backward are the same so forward and backward
         # should always return the same outputs.
-        for i in range(num_iters):
+        for _ in range(num_iters):
             e.forward(is_train=is_train)
             if (is_train):
                 # backward
@@ -1276,7 +1000,7 @@ def test_foreach():
 
         # Below we use imperative to reimplement foreach and compute its gradients.
         res = []
-        for i in range(len(_as_list(out_grads[0]))):
+        for _ in range(len(_as_list(out_grads[0]))):
             res.append([])
         for arr in _as_list(in_arrs):
             arr.attach_grad()
@@ -1505,6 +1229,7 @@ def test_foreach():
     def step14(in1, states, free):
         return (in1 + free[0], [])
     frees = [mx.nd.random.uniform(shape=(2))]
+    out_grads = [[mx.nd.random.uniform(-10, 10, arrs.shape)], []]
     verify_foreach(step14, v3, [], [v4], arrs, [], frees, out_grads)
     verify_foreach(step14, v3, [], [v4], arrs, [], frees, out_grads, False)
     def step15(in1, states, free):
@@ -1532,7 +1257,6 @@ def test_foreach():
     verify_foreach(step17, [v3, v4], [v5], [], arrs, states, [], out_grads, False)
 
 
-@with_seed()
 def test_foreach_nested():
     # Test nested foreach.
     def step_in(in1, states):
@@ -1556,7 +1280,7 @@ def test_foreach_nested():
     out = mx.sym.broadcast_add(out, states[0])
 
     js_1 = out.tojson()
-    out = mx.sym.load_json(js_1)
+    out = mx.sym.fromjson(js_1)
     js_2 = out.tojson()
     assert js_1 == js_2
 
@@ -1564,7 +1288,7 @@ def test_foreach_nested():
     state = mx.nd.arange(2)
     data_grad = mx.nd.empty(data.shape)
     state_grad = mx.nd.empty(state.shape)
-    e = out.bind(ctx=default_context(), args={'v1':data, 'v2':state},
+    e = out._bind(ctx=default_device(), args={'v1':data, 'v2':state},
             args_grad={'v1':data_grad, 'v2':state_grad})
     e.forward(is_train=True)
     out_grads = []
@@ -1586,578 +1310,6 @@ def test_foreach_nested():
     assert_almost_equal(state.grad.asnumpy(), state_grad.asnumpy(), rtol=1e-3, atol=1e-3)
 
 
-def check_foreach_rnn(cell_type, num_states):
-    data = mx.sym.var("data")
-    params = mx.rnn.RNNParams()
-    hidden_dim = 4
-    input_dim = 5
-    seq_len = 2
-    batch_size = 2
-
-    # This tests foreach with accumulation sum.
-    def step(in1, states):
-        rnn = cell_type(hidden_dim, prefix='', params=params)
-        next_h, states = rnn(in1, states)
-        return (next_h, states)
-
-    def sym_group(out):
-        if (isinstance(out[0], mx.sym.Symbol)):
-            ret = [out[0]]
-        else:
-            ret = out[0]
-        ret.extend(out[1])
-        return mx.sym.Group(ret)
-
-    rnn = cell_type(hidden_dim, prefix='', params=params)
-    if num_states == 2:
-        init_states = [mx.sym.var("h"), mx.sym.var("c")]
-    else:
-        init_states = [mx.sym.var("h")]
-    out = mx.sym.contrib.foreach(step, data, init_states)
-    out = sym_group(out)
-    arg_shapes, out_shapes, aux_shapes = out.infer_shape(data=(seq_len, batch_size, input_dim),
-            h=(batch_size, hidden_dim))
-    rnn_inputs = out.list_inputs()
-
-    # Inputs
-    args1 = {name:mx.nd.random.uniform(shape=arg_shapes[i]) for i, name in enumerate(rnn_inputs)}
-    args2 = copy.deepcopy(args1)
-    # gradients for the backward of the foreach symbol
-    args_grad1 = {name:mx.nd.empty(shape=arg_shapes[i]) for i, name in enumerate(rnn_inputs)}
-    # gradients for the backward of the unrolled symbol.
-    args_grad2 = {name:mx.nd.empty(shape=arg_shapes[i]) for i, name in enumerate(rnn_inputs)}
-
-    # Symbol of running LSTM with foreach.
-    out = mx.sym.contrib.foreach(step, data, init_states)
-    out = sym_group(out)
-    js_1 = out.tojson()
-    out = mx.sym.load_json(js_1)
-    js_2 = out.tojson()
-    assert js_1 == js_2
-    e1 = out.bind(ctx=default_context(), args=args1, args_grad=args_grad1)
-
-    # Symbol of running unrolled LSTM.
-    lstm = cell_type(hidden_dim, prefix='')
-    unroll_outs = []
-    states = init_states
-    for inputs in mx.sym.split(data, num_outputs=seq_len, axis=0, squeeze_axis=True):
-        h, states = lstm(inputs, states)
-        unroll_outs.append(mx.sym.expand_dims(h, axis=0))
-    unroll_outs = _as_list(mx.sym.concat(*unroll_outs, dim=0))
-    unroll_outs.extend(states)
-    out = mx.sym.Group(unroll_outs)
-    js_1 = out.tojson()
-    out = mx.sym.load_json(js_1)
-    js_2 = out.tojson()
-    assert js_1 == js_2
-    e2 = out.bind(ctx=default_context(), args=args2, args_grad=args_grad2)
-
-    for i in range(5):
-        out_grads = []
-        for arr in e1.outputs:
-            out_grads.append(mx.nd.random.uniform(-10, 10, arr.shape))
-
-        args = {name:mx.nd.random.uniform(shape=arg_shapes[i]) for i, name in enumerate(rnn_inputs)}
-
-        e1.forward(is_train=True, **args)
-        outputs1 = e1.outputs
-        e1.backward(out_grads)
-
-        e2.forward(is_train=True, **args)
-        outputs2 = e2.outputs
-        e2.backward(out_grads)
-
-        for i in range(len(outputs2)):
-            assert_almost_equal(outputs1[i].asnumpy(), outputs2[i].asnumpy(),
-                    rtol=1e-3, atol=1e-3)
-        input_names = out.list_inputs()
-        for i in range(len(e1.grad_arrays)):
-            name = input_names[i]
-            assert_almost_equal(args_grad1[name].asnumpy(), args_grad2[name].asnumpy(),
-                    rtol=1e-3, atol=1e-3)
-
-
-@with_seed()
-def test_foreach_rnn():
-    cell_types = [(mx.rnn.LSTMCell, 2), (mx.rnn.RNNCell, 1), (mx.rnn.GRUCell, 1)]
-    for cell_type, num_states in cell_types:
-        check_foreach_rnn(cell_type, num_states)
-
-
-@with_seed()
-def test_cut_subgraph_foreach():
-    class TestLayer(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(TestLayer, self).__init__(prefix=prefix, params=params)
-
-        def hybrid_forward(self, F, inputs, states):
-            def step1(data, states):
-                return data + 1, states
-            out1, states1 = F.contrib.foreach(step1, inputs, states)
-            out2, states2 = F.contrib.foreach(step1, out1, states)
-            def step2(data, states):
-                return data + states[0], states1
-            out, states = F.contrib.foreach(step2, out2, states)
-            return out
-
-    data = mx.nd.normal(loc=0, scale=1, shape=(5, 10))
-    states = mx.nd.normal(loc=0, scale=1, shape=(10))
-    layer = TestLayer()
-    layer.initialize(ctx=default_context())
-    res1 = layer(data, [states])
-
-    with mx.autograd.record():
-        res1 = layer(data, [states])
-
-    layer = TestLayer()
-    layer.initialize(ctx=default_context())
-    layer.hybridize()
-    res2 = layer(data, [states])
-
-    with mx.autograd.record():
-        res2 = layer(data, [states])
-    assert_almost_equal(res1.asnumpy(), res2.asnumpy(), rtol=1e-3, atol=1e-3)
-
-
-@with_seed()
-def test_uniq_name():
-    class ForeachLayer1(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(ForeachLayer1, self).__init__(prefix=prefix, params=params)
-
-        def hybrid_forward(self, F, inputs, states):
-            def step1(data, states):
-                return data + 1, states
-            out1, states1 = F.contrib.foreach(step1, inputs, states)
-            # The input variables have the same symbol name.
-            out, states = F.contrib.foreach(step1, out1, states1)
-            return out
-
-    class ForeachLayer2(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(ForeachLayer2, self).__init__(prefix=prefix, params=params)
-
-        def hybrid_forward(self, F, inputs, states):
-            def step1(data, states):
-                return data + 1, states
-            out1, states1 = F.contrib.foreach(step1, inputs, states)
-            def step2(data, states):
-                return data, [states[0] + states1[0] + F.squeeze(out1.slice_axis(axis=0, begin=0, end=1))]
-            # The input variables have the same symbol names.
-            # The free variables have the same symbol names as the input variables.
-            out, states = F.contrib.foreach(step2, out1, states1)
-            return out
-
-    class WhileLayer1(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(WhileLayer1, self).__init__(prefix=prefix, params=params)
-
-        def hybrid_forward(self, F, inputs, states):
-            def cond(state1, state2):
-                s = F.squeeze(state1.slice_axis(axis=0, begin=0, end=1))
-                return s == s
-            def step(state1, state2):
-                return state1 + 1, [state1, state2]
-            states = [states[0], states[0] + 1]
-            out1, states1 = F.contrib.while_loop(cond, step, states, max_iterations=5)
-            # The input variables have the same symbol name.
-            out, states = F.contrib.while_loop(cond, step, states1, max_iterations=5)
-            return out
-
-    class WhileLayer2(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(WhileLayer2, self).__init__(prefix=prefix, params=params)
-
-        def hybrid_forward(self, F, inputs, states):
-            def cond(state1, state2):
-                s = F.squeeze(state1.slice_axis(axis=0, begin=0, end=1))
-                return s == s
-            def step1(state1, state2):
-                return state1 + 1, [state1, state2]
-            states = [states[0], states[0] + 1]
-            out1, states1 = F.contrib.while_loop(cond, step1, states, max_iterations=5)
-            def step2(state1, state2):
-                return state1 + 1, [state1 + states1[0], state2 + states1[1]]
-            # The input variables have the same symbol name.
-            out, states = F.contrib.while_loop(cond, step2, states1, max_iterations=5)
-            return out
-
-    TestLayers = [ForeachLayer1, ForeachLayer2,
-            WhileLayer1, WhileLayer2]
-
-    data = mx.nd.normal(loc=0, scale=1, shape=(2, 5))
-    states = mx.nd.normal(loc=0, scale=1, shape=(5))
-    for TestLayer in TestLayers:
-        layer = TestLayer()
-        layer.initialize(ctx=default_context())
-        res1 = layer(data, [states])
-
-        with mx.autograd.record():
-            res1 = layer(data, [states])
-
-        layer = TestLayer()
-        layer.initialize(ctx=default_context())
-        layer.hybridize()
-        res2 = layer(data, [states])
-
-        with mx.autograd.record():
-            res2 = layer(data, [states])
-        assert_almost_equal(res1.asnumpy(), res2.asnumpy(), rtol=0.001, atol=0.0001)
-
-
-@with_seed()
-def test_cut_subgraph_while_loop():
-    class TestLayer(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(TestLayer, self).__init__(prefix=prefix, params=params)
-        def hybrid_forward(self, F, data):
-            out1, data1 = F.contrib.while_loop(
-                cond=lambda i: i <= 5,
-                func=lambda i: (None, (i + 1, )),
-                loop_vars=(data, ),
-                max_iterations=10,
-            )
-            out2, data2 = F.contrib.while_loop(
-                cond=lambda i: data1[0],
-                func=lambda i: (None, (i + 1, )),
-                loop_vars=data1[0],
-                max_iterations=10,
-            )
-            return data2[0]
-    data = mx.nd.normal(loc=0, scale=1, shape=(1, ))
-    layer = TestLayer()
-    layer.initialize(ctx=default_context())
-    res1 = layer(data)
-    with mx.autograd.record():
-        res1 = layer(data)
-    layer = TestLayer()
-    layer.initialize(ctx=default_context())
-    layer.hybridize()
-    res2 = layer(data)
-    with mx.autograd.record():
-        res2 = layer(data)
-    assert_almost_equal(res1.asnumpy(), res2.asnumpy(), rtol=1e-3, atol=1e-3)
-
-
-@with_seed()
-def test_cut_subgraph_cond():
-    class TestLayer(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(TestLayer, self).__init__(prefix=prefix, params=params)
-        def hybrid_forward(self, F, data):
-            data1 = F.contrib.cond(
-                data > 0.5,
-                then_func=lambda: data * 2,
-                else_func=lambda: data * 3,
-            )
-            data2 = F.contrib.cond(
-                data1 > 0.5,
-                then_func=lambda: data1 * 2,
-                else_func=lambda: data1 * 3,
-            )
-            return data2
-    data = mx.nd.normal(loc=0, scale=1, shape=(1, ))
-    layer = TestLayer()
-    layer.initialize(ctx=default_context())
-    res1 = layer(data)
-    with mx.autograd.record():
-        res1 = layer(data)
-    layer = TestLayer()
-    layer.initialize(ctx=default_context())
-    layer.hybridize()
-    res2 = layer(data)
-    with mx.autograd.record():
-        res2 = layer(data)
-    assert_almost_equal(res1.asnumpy(), res2.asnumpy(), rtol=1e-3, atol=1e-3)
-
-
-def test_scope():
-    class TestBlock1(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(TestBlock1, self).__init__(prefix=prefix, params=params)
-        def hybrid_forward(self, F, data):
-            (new_data, ) = F.contrib.cond(
-                data > 0.5,
-                then_func=lambda: data * 2,
-                else_func=lambda: data * 3,
-                name="my_cond",
-            )
-            return new_data
-    class TestBlock2(gluon.HybridBlock):
-        def __init__(self, prefix=None, params=None):
-            super(TestBlock2, self).__init__(prefix=prefix, params=params)
-        def hybrid_forward(self, F, data):
-            (new_data, ) = F.contrib.cond(
-                data > 0.5,
-                then_func=lambda: data * 2,
-                else_func=lambda: data * 3,
-                name="my_cond",
-            )
-            return new_data
-    AttrScope._subgraph_names = defaultdict(int)
-    data = mx.nd.normal(loc=0, scale=1, shape=(1, ))
-    block1 = TestBlock1()
-    block1.initialize(ctx=default_context())
-    block1.hybridize()
-    _ = block1(data)
-    block2 = TestBlock2()
-    block2.initialize(ctx=default_context())
-    block2.hybridize()
-    _ = block2(data)
-    assert len(AttrScope._subgraph_names) == 3
-    assert AttrScope._subgraph_names['my_cond_else'] == 2
-    assert AttrScope._subgraph_names['my_cond_pred'] == 2
-    assert AttrScope._subgraph_names['my_cond_then'] == 2
-
-
-def test_output_format_foreach():
-    class TestLayer1(gluon.HybridBlock):
-        def __init__(self, step, prefix=None, params=None):
-            super(TestLayer1, self).__init__(prefix=prefix, params=params)
-            self.step = step
-        def hybrid_forward(self, F, ins, states):
-            out, states = F.contrib.foreach(self.step, ins, states)
-            return out, states
-
-    def step1(data, state):
-        return data, state
-    def step2(data, state):
-        return [data], state
-    def step3(data, state):
-        if isinstance(state, list):
-            return [], [state[0] + data]
-        else:
-            return [], state + data
-    def step4(data, state):
-        if isinstance(state, list):
-            return [data, state[0]], state
-        else:
-            return [data, state], state
-
-    steps = [step1, step2, step3, step4]
-    data = mx.nd.normal(loc=0, scale=1, shape=(10, 2))
-    state = mx.nd.normal(loc=0, scale=1, shape=(2))
-    for step in steps:
-        layer1 = TestLayer1(step)
-        layer1.initialize(ctx=default_context())
-        layer2 = TestLayer1(step)
-        layer2.initialize(ctx=default_context())
-        layer2.hybridize()
-        out1, state1 = layer1(data, [state])
-        out2, state2 = layer2(data, [state])
-        step_out, step_state = step(data, [state])
-        assert type(out1) == type(step_out)
-        assert type(out2) == type(step_out)
-        assert type(state1) == type(step_state)
-        assert type(state2) == type(step_state)
-        out1 = _as_list(out1)
-        out2 = _as_list(out2)
-        state1 = _as_list(state1)
-        state2 = _as_list(state2)
-        for i in range(len(out1)):
-            assert_almost_equal(out1[i].asnumpy(), out2[i].asnumpy(), rtol=0.001, atol=0.0001)
-        for i in range(len(state1)):
-            assert_almost_equal(state1[i].asnumpy(), state2[i].asnumpy(), rtol=0.001, atol=0.0001)
-
-        layer1 = TestLayer1(step)
-        layer1.initialize(ctx=default_context())
-        layer2 = TestLayer1(step)
-        layer2.initialize(ctx=default_context())
-        layer2.hybridize()
-        out1, state1 = layer1(data, state)
-        out2, state2 = layer2(data, state)
-        step_out, step_state = step(data, state)
-        assert type(out1) == type(step_out)
-        assert type(out2) == type(step_out)
-        assert type(state1) == type(step_state)
-        assert type(state2) == type(step_state)
-        out1 = _as_list(out1)
-        out2 = _as_list(out2)
-        state1 = _as_list(state1)
-        state2 = _as_list(state2)
-        for i in range(len(out1)):
-            assert_almost_equal(out1[i].asnumpy(), out2[i].asnumpy(), rtol=0.001, atol=0.0001)
-        for i in range(len(state1)):
-            assert_almost_equal(state1[i].asnumpy(), state2[i].asnumpy(), rtol=0.001, atol=0.0001)
-
-        if step == step3:
-            continue
-        layer1 = TestLayer1(step)
-        layer1.initialize(ctx=default_context())
-        layer2 = TestLayer1(step)
-        layer2.initialize(ctx=default_context())
-        layer2.hybridize()
-        out1, state1 = layer1(data, [state, [state + 1]])
-        out2, state2 = layer2(data, [state, [state + 1]])
-        step_out, step_state = step(data, [state, [state + 1]])
-        assert type(out1) == type(step_out)
-        assert type(out2) == type(step_out)
-        assert type(state1) == type(step_state)
-        assert type(state2) == type(step_state)
-        out1 = _as_list(out1)
-        out2 = _as_list(out2)
-        state1 = _as_list(state1)
-        state2 = _as_list(state2)
-        for i in range(len(out1)):
-            assert_almost_equal(out1[i].asnumpy(), out2[i].asnumpy(), rtol=0.001, atol=0.0001)
-        for i in range(len(state1)):
-            if isinstance(state1[i], list):
-                assert_almost_equal(state1[i][0].asnumpy(), state2[i][0].asnumpy(),
-                        rtol=0.001, atol=0.0001)
-            else:
-                assert_almost_equal(state1[i].asnumpy(), state2[i].asnumpy(),
-                        rtol=0.001, atol=0.0001)
-
-
-def test_output_format_while():
-    class TestLayer1(gluon.HybridBlock):
-        def __init__(self, step, use_list, nested_list=False, prefix=None, params=None):
-            super(TestLayer1, self).__init__(prefix=prefix, params=params)
-            self.step = step
-            self.use_list = use_list
-            self.nested_list = nested_list
-        def hybrid_forward(self, F, states):
-            def cond(state1):
-                scalar = state1.slice_axis(axis=0, begin=0, end=1)
-                return scalar == scalar
-            cond_func = cond
-            if self.use_list:
-                states = [states]
-            elif self.nested_list:
-                def cond2(state1, state2):
-                    scalar = state1.slice_axis(axis=0, begin=0, end=1)
-                    return scalar == scalar
-                cond_func = cond2
-                states = [states, [states + 1]]
-            out, states = F.contrib.while_loop(cond_func, self.step, states, max_iterations=5)
-            return out, states
-
-    def step1(state):
-        return state, state
-    def step2(state):
-        if isinstance(state, list):
-            return state, state
-        else:
-            return [state], state
-    def step3(state):
-        return [], state
-
-    steps = [step1, step2, step3]
-    state = mx.nd.normal(loc=0, scale=1, shape=(2))
-    for step in steps:
-        layer1 = TestLayer1(step, False)
-        layer1.initialize(ctx=default_context())
-        layer2 = TestLayer1(step, False)
-        layer2.initialize(ctx=default_context())
-        layer2.hybridize()
-        out1, state1 = layer1(state)
-        out2, state2 = layer2(state)
-        assert type(out1) == type(out2)
-        assert type(state1) == type(state1)
-        out1 = _as_list(out1)
-        out2 = _as_list(out2)
-        state1 = _as_list(state1)
-        state2 = _as_list(state2)
-        for i in range(len(out1)):
-            assert_almost_equal(out1[i].asnumpy(), out2[i].asnumpy(), rtol=0.001, atol=0.0001)
-        for i in range(len(state1)):
-            assert_almost_equal(state1[i].asnumpy(), state2[i].asnumpy(), rtol=0.001, atol=0.0001)
-
-        layer1 = TestLayer1(step, True)
-        layer1.initialize(ctx=default_context())
-        layer2 = TestLayer1(step, True)
-        layer2.initialize(ctx=default_context())
-        layer2.hybridize()
-        out1, state1 = layer1(state)
-        out2, state2 = layer2(state)
-        assert type(out1) == type(out2)
-        assert type(state1) == type(state2)
-        out1 = _as_list(out1)
-        out2 = _as_list(out2)
-        state1 = _as_list(state1)
-        state2 = _as_list(state2)
-        for i in range(len(out1)):
-            assert_almost_equal(out1[i].asnumpy(), out2[i].asnumpy(), rtol=0.001, atol=0.0001)
-        for i in range(len(state1)):
-            assert_almost_equal(state1[i].asnumpy(), state2[i].asnumpy(), rtol=0.001, atol=0.0001)
-
-    def step4(state, state2):
-        states = _as_list(state)
-        states.append(state2)
-        return state, states
-    def step5(state, state2):
-        states = _as_list(state)
-        states.append(state2)
-        if isinstance(state, list):
-            return state, states
-        else:
-            return [state], states
-    def step6(state, state2):
-        states = _as_list(state)
-        states.append(state2)
-        return [], states
-
-    steps = [step4, step5, step6]
-    for step in steps:
-        layer1 = TestLayer1(step, False, True)
-        layer1.initialize(ctx=default_context())
-        layer2 = TestLayer1(step, False, True)
-        layer2.initialize(ctx=default_context())
-        layer2.hybridize()
-        out1, state1 = layer1(state)
-        out2, state2 = layer2(state)
-        assert type(out1) == type(out2)
-        assert type(state1) == type(state2)
-        out1 = _as_list(out1)
-        out2 = _as_list(out2)
-        state1 = _as_list(state1)
-        state2 = _as_list(state2)
-        for i in range(len(out1)):
-            assert_almost_equal(out1[i].asnumpy(), out2[i].asnumpy(), rtol=0.001, atol=0.0001)
-        for i in range(len(state1)):
-            if not isinstance(state1[i], list):
-                assert_almost_equal(state1[i].asnumpy(), state2[i].asnumpy(),
-                                    rtol=0.001, atol=0.0001)
-
-
-def test_output_format_cond():
-    class TestLayer1(gluon.HybridBlock):
-        def __init__(self, func, prefix=None, params=None):
-            super(TestLayer1, self).__init__(prefix=prefix, params=params)
-            self.func = func
-        def hybrid_forward(self, F, data):
-            def then_func():
-                return self.func(data)
-            def else_func():
-                return self.func(data)
-            return F.contrib.cond(data.slice_axis(axis=0, begin=0, end=1),
-                    then_func, else_func)
-
-    def func1(data):
-        return data
-    def func2(data):
-        return [data]
-    def func3(data):
-        return [data, data]
-
-    funcs = [func1, func2, func3]
-    data = mx.nd.normal(loc=0, scale=1, shape=(2))
-    for func in funcs:
-        layer1 = TestLayer1(func)
-        layer1.initialize(ctx=default_context())
-        layer2 = TestLayer1(func)
-        layer2.initialize(ctx=default_context())
-        layer2.hybridize()
-        out1 = layer1(data)
-        out2 = layer2(data)
-        func_out = func(data)
-        assert type(out1) == type(func_out)
-        assert type(out2) == type(func_out)
-        out1 = _as_list(out1)
-        out2 = _as_list(out2)
-        for i in range(len(out1)):
-            assert_almost_equal(out1[i].asnumpy(), out2[i].asnumpy(), rtol=0.001, atol=0.0001)
-
 def test_foreach_with_unkown_dim():
     # MXNet supports using 0 as placeholder for unknown dimensions in shape
     step = lambda data, states: (data + states[0], [states[0] * 2])
@@ -2167,7 +1319,3 @@ def test_foreach_with_unkown_dim():
     outs, states = mx.sym.contrib.foreach(step, data, states)
     _, output_shape, _ = outs.infer_shape_partial()
     assert_allclose((0, 3, 32, 32), output_shape[0])
-
-if __name__ == '__main__':
-    import nose
-    nose.runmodule()

@@ -18,25 +18,25 @@
  */
 
 /*!
- * Copyright (c) 2015 by Contributors
  * \file leaky_relu.cc
  * \brief
  * \author Bing Xu
-*/
+ */
 
 #include "./leaky_relu-inl.h"
 
 namespace mxnet {
 namespace op {
-template<>
-Operator *CreateOp<gpu>(LeakyReLUParam param, int dtype) {
-  Operator* op = nullptr;
-  MSHADOW_REAL_TYPE_SWITCH(dtype, DType, {
-    op = new LeakyReLUOp<gpu, DType>(param);
-  });
-  return op;
-}
+
+NNVM_REGISTER_OP(LeakyReLU)
+    .set_attr<FIsCUDAGraphsCompatible>("FIsCUDAGraphsCompatible",
+                                       [](const NodeAttrs& attrs, const bool) { return false; })
+    .set_attr<FCompute>("FCompute<gpu>", LeakyReLUCompute<gpu>);
+
+NNVM_REGISTER_OP(_backward_LeakyReLU)
+    .set_attr<FIsCUDAGraphsCompatible>("FIsCUDAGraphsCompatible",
+                                       [](const NodeAttrs& attrs, const bool) { return false; })
+    .set_attr<FCompute>("FCompute<gpu>", LeakyReLUGradCompute<gpu>);
 
 }  // namespace op
 }  // namespace mxnet
-

@@ -27,7 +27,7 @@ from mxnet.gluon import nn
 from mxnet.gluon.model_zoo import vision as models
 from mxnet import autograd as ag
 from mxnet.test_utils import get_mnist_iterator
-from mxnet.metric import Accuracy, TopKAccuracy, CompositeEvalMetric
+from mxnet.gluon.metric import Accuracy, TopKAccuracy, CompositeEvalMetric
 import numpy as np
 
 from data import (get_cifar10_iterator, get_imagenet_iterator,
@@ -68,7 +68,7 @@ parser.add_argument('--wd', type=float, default=0.0001,
 parser.add_argument('--seed', type=int, default=123,
                     help='random seed to use. Default=123.')
 parser.add_argument('--mode', type=str,
-                    help='mode in which to train the model. options are symbolic, imperative, hybrid')
+                    help='mode in which to train the model. options are imperative, hybrid')
 parser.add_argument('--model', type=str, required=True,
                     help='type of model to use. see vision_model for options.')
 parser.add_argument('--use_thumbnail', action='store_true',
@@ -107,16 +107,16 @@ mx.random.seed(opt.seed)
 model_name = opt.model
 dataset_classes = {'mnist': 10, 'cifar10': 10, 'caltech101':101, 'imagenet': 1000, 'dummy': 1000}
 batch_size, dataset, classes = opt.batch_size, opt.dataset, dataset_classes[opt.dataset]
-context = [mx.gpu(int(i)) for i in opt.gpus.split(',')] if opt.gpus.strip() else [mx.cpu()]
-num_gpus = len(context)
+device = [mx.gpu(int(i)) for i in opt.gpus.split(',')] if opt.gpus.strip() else [mx.cpu()]
+num_gpus = len(device)
 batch_size *= max(1, num_gpus)
 lr_steps = [int(x) for x in opt.lr_steps.split(',') if x.strip()]
 metric = CompositeEvalMetric([Accuracy(), TopKAccuracy(5)])
 kv = mx.kv.create(opt.kvstore)
 
-def get_model(model, ctx, opt):
+def get_model(model, device, opt):
     """Model initialization."""
-    kwargs = {'ctx': ctx, 'pretrained': opt.use_pretrained, 'classes': classes}
+    kwargs = {'device': device, 'pretrained': opt.use_pretrained, 'classes': classes}
     if model.startswith('resnet'):
         kwargs['thumbnail'] = opt.use_thumbnail
     elif model.startswith('vgg'):
@@ -133,7 +133,7 @@ def get_model(model, ctx, opt):
     net.cast(opt.dtype)
     return net
 
-net = get_model(opt.model, context, opt)
+net = get_model(opt.model, device, opt)
 
 def get_data_iters(dataset, batch_size, opt):
     """get dataset iterators"""
@@ -159,14 +159,14 @@ def get_data_iters(dataset, batch_size, opt):
         train_data, val_data = dummy_iterator(batch_size, (3, shape_dim, shape_dim))
     return train_data, val_data
 
-def test(ctx, val_data):
+def test(device, val_data):
     metric.reset()
     val_data.reset()
     for batch in val_data:
         data = gluon.utils.split_and_load(batch.data[0].astype(opt.dtype, copy=False),
-                                          ctx_list=ctx, batch_axis=0)
+                                          device_list=device, batch_axis=0)
         label = gluon.utils.split_and_load(batch.label[0].astype(opt.dtype, copy=False),
-                                           ctx_list=ctx, batch_axis=0)
+                                           device_list=device, batch_axis=0)
         outputs = [net(X) for X in data]
         metric.update(label, outputs)
     return metric.get()
@@ -179,21 +179,22 @@ def update_learning_rate(lr, trainer, epoch, ratio, steps):
 
 def save_checkpoint(epoch, top1, best_acc):
     if opt.save_frequency and (epoch + 1) % opt.save_frequency == 0:
-        fname = os.path.join(opt.prefix, '%s_%d_acc_%.4f.params' % (opt.model, epoch, top1))
+        fname = os.path.join(opt.prefix, f'{opt.model}_{epoch}_acc_{top1:.4f}.params')
         net.save_parameters(fname)
-        logger.info('[Epoch %d] Saving checkpoint to %s with Accuracy: %.4f', epoch, fname, top1)
+        logger.info(f'[Epoch {epoch}] Saving checkpoint to {fname} with Accuracy: {top1:.4f}')
     if top1 > best_acc[0]:
         best_acc[0] = top1
-        fname = os.path.join(opt.prefix, '%s_best.params' % (opt.model))
+        fname = os.path.join(opt.prefix, f'{opt.model}_best.params')
         net.save_parameters(fname)
-        logger.info('[Epoch %d] Saving checkpoint to %s with Accuracy: %.4f', epoch, fname, top1)
+        logger.info(f'[Epoch {epoch}] Saving checkpoint to {fname} with Accuracy: {top1:.4f}')
 
-def train(opt, ctx):
-    if isinstance(ctx, mx.Context):
-        ctx = [ctx]
+def train(opt, device):
+    if isinstance(device, mx.Device):
+        device = [device]
 
     train_data, val_data = get_data_iters(dataset, batch_size, opt)
-    net.collect_params().reset_ctx(ctx)
+    for p in net.collect_params().values():
+        p.reset_device(device)
     trainer = gluon.Trainer(net.collect_params(), 'sgd',
                             optimizer_params={'learning_rate': opt.lr,
                                               'wd': opt.wd,
@@ -212,8 +213,8 @@ def train(opt, ctx):
         metric.reset()
         btic = time.time()
         for i, batch in enumerate(train_data):
-            data = gluon.utils.split_and_load(batch.data[0].astype(opt.dtype), ctx_list=ctx, batch_axis=0)
-            label = gluon.utils.split_and_load(batch.label[0].astype(opt.dtype), ctx_list=ctx, batch_axis=0)
+            data = gluon.utils.split_and_load(batch.data[0].astype(opt.dtype), device_list=device, batch_axis=0)
+            label = gluon.utils.split_and_load(batch.label[0].astype(opt.dtype), device_list=device, batch_axis=0)
             outputs = []
             Ls = []
             with ag.record():
@@ -244,7 +245,7 @@ def train(opt, ctx):
         name, acc = metric.get()
         logger.info('[Epoch %d] training: %s=%f, %s=%f'%(epoch, name[0], acc[0], name[1], acc[1]))
         logger.info('[Epoch %d] time cost: %f'%(epoch, epoch_time))
-        name, val_acc = test(ctx, val_data)
+        name, val_acc = test(device, val_data)
         logger.info('[Epoch %d] validation: %s=%f, %s=%f'%(epoch, name[0], val_acc[0], name[1], val_acc[1]))
 
         # save model if meet requirements
@@ -256,30 +257,9 @@ def main():
     if opt.builtin_profiler > 0:
         profiler.set_config(profile_all=True, aggregate_stats=True)
         profiler.set_state('run')
-    if opt.mode == 'symbolic':
-        data = mx.sym.var('data')
-        if opt.dtype == 'float16':
-            data = mx.sym.Cast(data=data, dtype=np.float16)
-        out = net(data)
-        if opt.dtype == 'float16':
-            out = mx.sym.Cast(data=out, dtype=np.float32)
-        softmax = mx.sym.SoftmaxOutput(out, name='softmax')
-        mod = mx.mod.Module(softmax, context=context)
-        train_data, val_data = get_data_iters(dataset, batch_size, opt)
-        mod.fit(train_data,
-                eval_data=val_data,
-                num_epoch=opt.epochs,
-                kvstore=kv,
-                batch_end_callback = mx.callback.Speedometer(batch_size, max(1, opt.log_interval)),
-                epoch_end_callback = mx.callback.do_checkpoint('image-classifier-%s'% opt.model),
-                optimizer = 'sgd',
-                optimizer_params = {'learning_rate': opt.lr, 'wd': opt.wd, 'momentum': opt.momentum, 'multi_precision': True},
-                initializer = mx.init.Xavier(magnitude=2))
-        mod.save_parameters('image-classifier-%s-%d-final.params'%(opt.model, opt.epochs))
-    else:
-        if opt.mode == 'hybrid':
-            net.hybridize()
-        train(opt, context)
+    if opt.mode == 'hybrid':
+        net.hybridize()
+    train(opt, device)
     if opt.builtin_profiler > 0:
         profiler.set_state('stop')
         print(profiler.dumps())
@@ -287,10 +267,10 @@ def main():
 if __name__ == '__main__':
     if opt.profile:
         import hotshot, hotshot.stats
-        prof = hotshot.Profile('image-classifier-%s-%s.prof'%(opt.model, opt.mode))
+        prof = hotshot.Profile(f'image-classifier-{opt.model}-{opt.mode}.prof')
         prof.runcall(main)
         prof.close()
-        stats = hotshot.stats.load('image-classifier-%s-%s.prof'%(opt.model, opt.mode))
+        stats = hotshot.stats.load(f'image-classifier-{opt.model}-{opt.mode}.prof')
         stats.strip_dirs()
         stats.sort_stats('cumtime', 'calls')
         stats.print_stats()

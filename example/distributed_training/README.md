@@ -1,19 +1,22 @@
-<!--- Licensed to the Apache Software Foundation (ASF) under one -->
-<!--- or more contributor license agreements.  See the NOTICE file -->
-<!--- distributed with this work for additional information -->
-<!--- regarding copyright ownership.  The ASF licenses this file -->
-<!--- to you under the Apache License, Version 2.0 (the -->
-<!--- "License"); you may not use this file except in compliance -->
-<!--- with the License.  You may obtain a copy of the License at -->
-
-<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
-
-<!--- Unless required by applicable law or agreed to in writing, -->
-<!--- software distributed under the License is distributed on an -->
-<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
-<!--- KIND, either express or implied.  See the License for the -->
-<!--- specific language governing permissions and limitations -->
-<!--- under the License. -->
+<!--
+  ~ Licensed to the Apache Software Foundation (ASF) under one
+  ~ or more contributor license agreements.  See the NOTICE file
+  ~ distributed with this work for additional information
+  ~ regarding copyright ownership.  The ASF licenses this file
+  ~ to you under the Apache License, Version 2.0 (the
+  ~ "License"); you may not use this file except in compliance
+  ~ with the License.  You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing,
+  ~ software distributed under the License is distributed on an
+  ~ "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  ~ KIND, either express or implied.  See the License for the
+  ~ specific language governing permissions and limitations
+  ~ under the License.
+  ~
+-->
 
 # Distributed Training using Gluon
 
@@ -48,7 +51,7 @@ Scheduler is responsible for scheduling the workers and parameter servers. There
 
 ### Step 1: Use a distributed key-value store:
 
-Like mentioned above, in distributed training, parameters are split into N parts and distributed across N hosts. This is done automatically by the [distributed key-value store](https://mxnet.incubator.apache.org/tutorials/python/kvstore.html). User only needs to create the distributed kv store and ask the `Trainer` to use the created store.
+Like mentioned above, in distributed training, parameters are split into N parts and distributed across N hosts. This is done automatically by the [distributed key-value store](https://mxnet.apache.org/tutorials/python/kvstore.html). User only needs to create the distributed kv store and ask the `Trainer` to use the created store.
 
 ```python
 store = mxnet.kv.create('dist')
@@ -117,7 +120,7 @@ We can then create a `DataLoader` using the `SplitSampler` like shown below:
 
 ```python
 # Load the training data
-train_data = gluon.data.DataLoader(gluon.data.vision.CIFAR10(train=True, transform=transform),
+train_data = gluon.data.DataLoader(gluon.data.vision.CIFAR10(train=True).transform(transform),
                                       batch_size,
                                       sampler=SplitSampler(50000, store.num_workers, store.rank))
 ```
@@ -141,7 +144,7 @@ def train_batch(batch, ctx, net, trainer):
     # Split and load data into multiple GPUs
     data = batch[0]
     data = gluon.utils.split_and_load(data, ctx)
-    
+
     # Split and load label into multiple GPUs
     label = batch[1]
     label = gluon.utils.split_and_load(label, ctx)
@@ -183,7 +186,7 @@ for batch in train_data:
 
 ## Final Step: Launching the distributed training
 
-Note that there are several processes that needs to be launched on multiple machines to do distributed training. One worker and one parameter server needs to be launched on each host. Scheduler needs to be launched on one of the hosts. While this can be done manually, MXNet provides the [`launch.py`](https://github.com/apache/incubator-mxnet/blob/master/tools/launch.py) tool to make this easy.
+Note that there are several processes that needs to be launched on multiple machines to do distributed training. One worker and one parameter server needs to be launched on each host. Scheduler needs to be launched on one of the hosts. While this can be done manually, MXNet provides the [`launch.py`](https://github.com/apache/mxnet/blob/master/tools/launch.py) tool to make this easy.
 
 For example, the following command launches distributed training on two machines:
 
@@ -204,7 +207,7 @@ python ~/mxnet/tools/launch.py -n 2 -s 2 -H hosts \
 Let's take a look at the `hosts` file.
 
 ```
-~/dist$ cat hosts 
+~/dist$ cat hosts
 d1
 d2
 ```
@@ -232,7 +235,7 @@ Last login: Wed Jan 31 18:06:45 2018 from 72.21.198.67
 Note that no authentication information was provided to login to the host. This can be done using multiple methods. One easy way is to specify the ssh certificates in `~/.ssh/config`. Example:
 
 ```
-~$ cat ~/.ssh/config 
+~$ cat ~/.ssh/config
 Host d1
     HostName ec2-34-201-108-233.compute-1.amazonaws.com
     port 22
@@ -269,4 +272,3 @@ Epoch 4: Test_acc 0.687900
 ```
 
 Note that the output from all hosts are merged and printed to the console.
-

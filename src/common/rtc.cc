@@ -20,20 +20,20 @@
 #include <mxnet/rtc.h>
 #include <typeinfo>
 
-#include "../common/cuda_utils.h"
+#include "cuda/utils.h"
 #include "../operator/operator_common.h"
 
-#if MXNET_USE_CUDA && MXNET_ENABLE_CUDA_RTC
+#if MXNET_USE_CUDA
 
 namespace mxnet {
 namespace rtc {
 
-CudaModule::Chunk::Chunk(
-    const char* source,
-    const std::vector<std::string>& options,
-    const std::vector<std::string>& exports) {
-  NVRTC_CALL(nvrtcCreateProgram(&prog_, source, "source.cu", 0, NULL, NULL));
-  for (const auto& i : exports) exports_.insert(i);
+CudaModule::Chunk::Chunk(const char* source,
+                         const std::vector<std::string>& options,
+                         const std::vector<std::string>& exports) {
+  NVRTC_CALL(nvrtcCreateProgram(&prog_, source, "source.cu", 0, nullptr, nullptr));
+  for (const auto& i : exports)
+    exports_.insert(i);
 #if CUDA_VERSION >= 8000
   for (const auto& func : exports) {
     NVRTC_CALL(nvrtcAddNameExpression(prog_, func.c_str()));
@@ -45,7 +45,8 @@ CudaModule::Chunk::Chunk(
       << "with extern \"C\" instead.";
 #endif
   std::vector<const char*> c_options;
-  for (const auto& i : options) c_options.push_back(i.c_str());
+  for (const auto& i : options)
+    c_options.push_back(i.c_str());
   nvrtcResult compile_res = nvrtcCompileProgram(prog_, c_options.size(), c_options.data());
   if (compile_res != NVRTC_SUCCESS) {
     size_t err_size;
@@ -55,27 +56,41 @@ CudaModule::Chunk::Chunk(
     LOG(FATAL) << err.data();
   }
 
-  size_t ptx_size;
-  NVRTC_CALL(nvrtcGetPTXSize(prog_, &ptx_size));
-  ptx_ = new char[ptx_size];
-  NVRTC_CALL(nvrtcGetPTX(prog_, ptx_));
-}
+  bool use_ptx = true;
+  for (const auto& opt : options) {
+    if (opt.find("sm_") != std::string::npos) {
+      use_ptx = false;
+      break;
+    }
+  }
 
+  if (use_ptx) {
+    size_t ptx_size;
+    NVRTC_CALL(nvrtcGetPTXSize(prog_, &ptx_size));
+    ptx_.resize(ptx_size);
+    NVRTC_CALL(nvrtcGetPTX(prog_, ptx_.data()));
+  } else {
+#if CUDA_VERSION >= 11010
+    size_t cubin_size;
+    NVRTC_CALL(nvrtcGetCUBINSize(prog_, &cubin_size));
+    ptx_.resize(cubin_size);
+    NVRTC_CALL(nvrtcGetCUBIN(prog_, ptx_.data()));
+#else
+    LOG(FATAL) << "Your CUDA version does not support compiling for sm_XX target. "
+               << "Use compute_XX target instead or upgrade to CUDA 11.1 or later.";
+#endif
+  }
+}
 
 CudaModule::Chunk::~Chunk() {
   for (const auto& kv : mod_) {
     CUDA_DRIVER_CALL(cuModuleUnload(kv.second));
   }
   NVRTC_CALL(nvrtcDestroyProgram(&prog_));
-  delete ptx_;
 }
 
-
-CUfunction CudaModule::Chunk::GetFunction(
-    const std::string& mangled_name,
-    const Context& ctx) {
-  CHECK_EQ(ctx.dev_mask(), Context::kGPU)
-      << "CUDA Runtime compilation only supports Nvidia GPU.";
+CUfunction CudaModule::Chunk::GetFunction(const std::string& mangled_name, const Context& ctx) {
+  CHECK_EQ(ctx.dev_mask(), Context::kGPU) << "CUDA Runtime compilation only supports Nvidia GPU.";
   auto iter = mod_.find(ctx.dev_id);
   mxnet::common::cuda::DeviceStore device_store;
   CUmodule module;
@@ -83,7 +98,7 @@ CUfunction CudaModule::Chunk::GetFunction(
     module = iter->second;
   } else {
     device_store.SetDevice(ctx.dev_id);
-    CUDA_DRIVER_CALL(cuModuleLoadDataEx(&module, ptx_, 0, 0, 0));
+    CUDA_DRIVER_CALL(cuModuleLoadDataEx(&module, ptx_.data(), 0, nullptr, nullptr));
     mod_[ctx.dev_id] = module;
   }
   CUfunction function;
@@ -98,13 +113,12 @@ CUfunction CudaModule::Chunk::GetFunction(
   return function;
 }
 
-
-std::shared_ptr<CudaModule::Kernel> CudaModule::GetKernel(
-    const std::string& name, const std::vector<ArgType>& signature) {
+std::shared_ptr<CudaModule::Kernel> CudaModule::GetKernel(const std::string& name,
+                                                          const std::vector<ArgType>& signature) {
   std::string mangled_name = name;
 #if CUDA_VERSION >= 8000
   if (ptr_->exports_.count(name)) {
-    const char * c_mangled_name;
+    const char* c_mangled_name;
     NVRTC_CALL(nvrtcGetLoweredName(ptr_->prog_, name.c_str(), &c_mangled_name));
     mangled_name = c_mangled_name;
   }
@@ -112,23 +126,23 @@ std::shared_ptr<CudaModule::Kernel> CudaModule::GetKernel(
   return std::shared_ptr<Kernel>(new Kernel(ptr_, mangled_name, signature));
 }
 
+CudaModule::Kernel::Kernel(const std::shared_ptr<CudaModule::Chunk>& mod,
+                           const std::string& mangled_name,
+                           const std::vector<ArgType>& signature)
+    : mangled_name_(mangled_name), signature_(signature), mod_(mod) {}
 
-CudaModule::Kernel::Kernel(
-    const std::shared_ptr<CudaModule::Chunk>& mod,
-    const std::string& mangled_name,
-    const std::vector<ArgType>& signature)
-      : mangled_name_(mangled_name), signature_(signature), mod_(mod) {
-}
+void CudaModule::Kernel::Launch(const Context& ctx,
+                                const std::vector<dmlc::any>& args,
+                                uint32_t grid_dim_x,
+                                uint32_t grid_dim_y,
+                                uint32_t grid_dim_z,
+                                uint32_t block_dim_x,
+                                uint32_t block_dim_y,
+                                uint32_t block_dim_z,
+                                uint32_t shared_mem) {
+  CHECK_EQ(ctx.dev_mask(), Context::kGPU) << "CUDA Runtime compilation only supports Nvidia GPU.";
 
-void CudaModule::Kernel::Launch(
-    const Context& ctx, const std::vector<dmlc::any>& args,
-    uint32_t grid_dim_x, uint32_t grid_dim_y, uint32_t grid_dim_z,
-    uint32_t block_dim_x, uint32_t block_dim_y, uint32_t block_dim_z,
-    uint32_t shared_mem) {
-  CHECK_EQ(ctx.dev_mask(), Context::kGPU)
-      << "CUDA Runtime compilation only supports Nvidia GPU.";
-
-  auto mod = mod_;
+  auto mod       = mod_;
   auto arg_types = signature();
 
   CUfunction function;
@@ -136,13 +150,14 @@ void CudaModule::Kernel::Launch(
   if (iter != func_.end()) {
     function = iter->second;
   } else {
-    function = mod_->GetFunction(mangled_name_, ctx);
+    function          = mod_->GetFunction(mangled_name_, ctx);
     func_[ctx.dev_id] = function;
   }
 
   std::vector<Engine::VarHandle> read_vars, write_vars;
   for (size_t i = 0; i < arg_types.size(); ++i) {
-    if (!arg_types[i].is_ndarray) continue;
+    if (!arg_types[i].is_ndarray)
+      continue;
     const auto& array = dmlc::get<NDArray>(args[i]);
     CHECK_EQ(array.dtype(), arg_types[i].dtype)
         << "The i-th argument is expected to be an NDArray of "
@@ -156,34 +171,53 @@ void CudaModule::Kernel::Launch(
   }
 
   Engine::Get()->PushSync(
-    [function, mod, args, arg_types, grid_dim_x, grid_dim_y, grid_dim_z,
-     block_dim_x, block_dim_y, block_dim_z, shared_mem](RunContext rctx) {
-    std::vector<void*> p_args;
-    for (size_t i = 0; i < arg_types.size(); ++i) {
-      if (arg_types[i].is_ndarray) {
-        const auto& array = dmlc::get<NDArray>(args[i]);
-        p_args.push_back(reinterpret_cast<void*>(const_cast<void**>(&array.data().dptr_)));
-      } else {
-        MSHADOW_TYPE_SWITCH(arg_types[i].dtype, DType, {
-          const auto& number = dmlc::get<DType>(args[i]);
-          p_args.push_back(const_cast<DType*>(&number));
-        });
-      }
-    }
+      [function,
+       mod,
+       args,
+       arg_types,
+       grid_dim_x,
+       grid_dim_y,
+       grid_dim_z,
+       block_dim_x,
+       block_dim_y,
+       block_dim_z,
+       shared_mem](RunContext rctx) {
+        std::vector<void*> p_args;
+        for (size_t i = 0; i < arg_types.size(); ++i) {
+          if (arg_types[i].is_ndarray) {
+            const auto& array = dmlc::get<NDArray>(args[i]);
+            p_args.push_back(reinterpret_cast<void*>(const_cast<void**>(&array.data().dptr_)));
+          } else {
+            MSHADOW_TYPE_SWITCH(arg_types[i].dtype, DType, {
+              const auto& number = dmlc::get<DType>(args[i]);
+              p_args.push_back(const_cast<DType*>(&number));
+            });
+          }
+        }
 
-    mshadow::Stream<gpu> *s = rctx.get_stream<gpu>();
-    CUDA_DRIVER_CALL(cuLaunchKernel(
-        function, grid_dim_x, grid_dim_y, grid_dim_z,
-        block_dim_x, block_dim_y, block_dim_z,
-        shared_mem, s->stream_,
-        p_args.data(), 0));
-    CUDA_CALL(cudaStreamSynchronize(s->stream_));
-  }, ctx, read_vars, write_vars, FnProperty::kNormal, 0,
-  mangled_name_.c_str());
+        mshadow::Stream<gpu>* s = rctx.get_stream<gpu>();
+        CUDA_DRIVER_CALL(cuLaunchKernel(function,
+                                        grid_dim_x,
+                                        grid_dim_y,
+                                        grid_dim_z,
+                                        block_dim_x,
+                                        block_dim_y,
+                                        block_dim_z,
+                                        shared_mem,
+                                        s->stream_,
+                                        p_args.data(),
+                                        nullptr));
+        CUDA_CALL(cudaStreamSynchronize(s->stream_));
+      },
+      ctx,
+      read_vars,
+      write_vars,
+      FnProperty::kNormal,
+      0,
+      mangled_name_.c_str());
 }
-
 
 }  // namespace rtc
 }  // namespace mxnet
 
-#endif  // MXNET_USE_CUDA && MXNET_ENABLE_CUDA_RTC
+#endif  // MXNET_USE_CUDA

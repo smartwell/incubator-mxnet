@@ -17,12 +17,12 @@
 
 import mxnet as mx
 import numpy as np
-import unittest
 import os
+import pytest
 
 shapes = [(10), (100), (1000), (10000), (100000), (2,2), (2,3,4,5,6,7,8)]
 keys = [1,2,3,4,5,6,7]
-num_gpus = mx.context.num_gpus()
+num_gpus = mx.device.num_gpus()
 
 
 if num_gpus > 8 :
@@ -32,7 +32,7 @@ if num_gpus > 8 :
 
 gpus = range(1, 1+num_gpus)
 
-@unittest.skip("Test requires NCCL library installed and enabled during build")
+@pytest.mark.skip(reason="Test requires NCCL library installed and enabled during build")
 def test_nccl_pushpull():
     for shape, key in zip(shapes, keys):
         for n_gpus in gpus:

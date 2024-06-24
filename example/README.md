@@ -1,19 +1,22 @@
-<!--- Licensed to the Apache Software Foundation (ASF) under one -->
-<!--- or more contributor license agreements.  See the NOTICE file -->
-<!--- distributed with this work for additional information -->
-<!--- regarding copyright ownership.  The ASF licenses this file -->
-<!--- to you under the Apache License, Version 2.0 (the -->
-<!--- "License"); you may not use this file except in compliance -->
-<!--- with the License.  You may obtain a copy of the License at -->
-
-<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
-
-<!--- Unless required by applicable law or agreed to in writing, -->
-<!--- software distributed under the License is distributed on an -->
-<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
-<!--- KIND, either express or implied.  See the License for the -->
-<!--- specific language governing permissions and limitations -->
-<!--- under the License. -->
+<!--
+  ~ Licensed to the Apache Software Foundation (ASF) under one
+  ~ or more contributor license agreements.  See the NOTICE file
+  ~ distributed with this work for additional information
+  ~ regarding copyright ownership.  The ASF licenses this file
+  ~ to you under the Apache License, Version 2.0 (the
+  ~ "License"); you may not use this file except in compliance
+  ~ with the License.  You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing,
+  ~ software distributed under the License is distributed on an
+  ~ "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  ~ KIND, either express or implied.  See the License for the
+  ~ specific language governing permissions and limitations
+  ~ under the License.
+  ~
+-->
 
 # MXNet Examples
 
@@ -48,17 +51,17 @@ Example applications or scripts should be submitted in this `example` folder.
 
 ### Tutorials
 
-If you have a tutorial idea for the website, download the [Jupyter notebook tutorial template](https://github.com/dmlc/mxnet/tree/master/example/MXNetTutorialTemplate.ipynb).
+If you have a tutorial idea for the website, download the [Jupyter notebook tutorial template](https://github.com/apache/mxnet/tree/master/example/MXNetTutorialTemplate.ipynb).
 
 #### Tutorial location
 
-Notebook tutorials should be submitted in the `docs/tutorials` folder, so that they maybe rendered in the [web site's tutorial section](https://mxnet.incubator.apache.org/tutorials/index.html).
+Notebook tutorials should be submitted in the `docs/tutorials` folder, so that they maybe rendered in the [web site's tutorial section](https://mxnet.apache.org/tutorials/index.html).
 
 Do not forget to udpdate the `docs/tutorials/index.md` for your tutorial to show up on the website.
 
 #### Tutorial formatting
 
-The site expects the format to be markdown, so export your notebook as a .md via the Jupyter web interface menu (File > Download As > Markdown). Then, to enable the download notebook button in the web site's UI ([example](https://mxnet.incubator.apache.org/tutorials/python/linear-regression.html)), add the following as the last line of the file ([example](https://github.com/apache/incubator-mxnet/blame/master/docs/tutorials/python/linear-regression.md#L194)):
+The site expects the format to be markdown, so export your notebook as a .md via the Jupyter web interface menu (File > Download As > Markdown). Then, to enable the download notebook button in the web site's UI ([example](https://mxnet.apache.org/tutorials/python/linear-regression.html)), add the following as the last line of the file ([example](https://github.com/apache/mxnet/blame/master/docs/tutorials/python/linear-regression.md#L194)):
 
 ```
 <!-- INSERT SOURCE DOWNLOAD BUTTONS -->
@@ -78,76 +81,38 @@ As part of making sure all our tutorials are running correctly with the latest v
 
 Add your own test here `tests/tutorials/test_tutorials.py`. (If you forget, don't worry your PR will not pass the sanity check).
 
-If your tutorial depends on specific packages, simply add them to this provisionning script: `ci/docker/install/ubuntu_tutorials.sh`
+If your tutorial depends on specific packages, simply add them to this provisioning script: `ci/docker/install/ubuntu_tutorials.sh`
 
 ## <a name="list-of-examples"></a>List of examples
 
 ### <a name="language-binding-examples"></a>Languages Binding Examples
 ------------------
-* [MXNet C++ API](http://mxnet.incubator.apache.org/api/c++/index.html)
-   - [C++ examples](https://github.com/apache/incubator-mxnet/tree/master/example/image-classification/predict-cpp) - Example code for using C++ interface, including NDArray, symbolic layer and models.
-* [MXNet Python API](http://mxnet.incubator.apache.org/api/python/index.html)
-* [MXNet Java API](http://mxnet.incubator.apache.org/api/java/index.html)
-* [MXNet Scala API](http://mxnet.incubator.apache.org/api/scala/index.html)
-* [MXNet R API](http://mxnet.incubator.apache.org/api/r/index.html)
-* [MXNet Julia API](http://mxnet.incubator.apache.org/api/julia/index.html)
-* [MXNet Perl API](https://mxnet.incubator.apache.org/api/perl/index.html)
+* [MXNet C++ API](https://mxnet.apache.org/api/c++/index.html)
+   - [C++ examples](https://github.com/apache/mxnet/tree/master/example/image-classification/predict-cpp) - Example code for using C++ interface, including NDArray, symbolic layer and models.
+* [MXNet Python API](https://mxnet.apache.org/api/python/index.html)
+* [MXNet Java API](https://mxnet.apache.org/api/java/index.html)
+* [MXNet Scala API](https://mxnet.apache.org/api/scala/index.html)
+* [MXNet R API](https://mxnet.apache.org/api/r/index.html)
+* [MXNet Julia API](https://mxnet.apache.org/api/julia/index.html)
+* [MXNet Perl API](https://mxnet.apache.org/api/perl/index.html)
 * [go-mxnet-predictor](https://github.com/songtianyi/go-mxnet-predictor) - Go binding for inference
-* [MXNet JNI](https://github.com/dmlc/mxnet/tree/master/amalgamation/jni) - JNI(Android) library
-* [MXNet Amalgamation](https://github.com/dmlc/mxnet/tree/master/amalgamation) - Amalgamation (entire library in a single file)
 * [MXNet Javascript](https://github.com/dmlc/mxnet.js/) - MXNetJS: Javascript Package for Deep Learning in Browser (without server)
 
 ### <a name="deep-learning-examples-mxnet"></a>Deep Learning Examples in the MXNet Project Repository
 --------------
 * [Autoencoder](autoencoder) - unsupervised feature learning
-* [Bayesian Methods](bayesian-methods) - various examples related to Bayesian Methods
-* [Bidirectional LSTM Sorting](bi-lstm-sort) - use a bidirectional LSTM to sort an array
-* [Caffe](caffe) - how to call Caffe operators from MXNet
-* [CNN for Chinese Text Classification](cnn_chinese_text_classification) - a MXnet example for Chinese text classification
-* [CNN for Text Classification](cnn_text_classification) - a MXnet example for text classification
-* [CTC with MXNet](ctc) - a modification of warpctc
-* [Deep Embedded Clustering](deep-embedded-clustering) - unsupervised deep embedding for clustering analysis
-* [Dense-Sparse-Dense Training](dsd) - Dense-Sparse-Dense Training for deep neural networks
-* [Fully Convolutional Networks](fcn-xs) - fully convolutional networks for semantic segmentation
-* [Generative Adversarial Networks with R](gan/CGAN_mnist_R) - GAN examples in R
 * [Gluon Examples](gluon) - several examples using the Gluon API
   * [Style Transfer](gluon/style_transfer) - a style transfer example using gluon
   * [Word Language Model](gluon/word_language_model) - an example that trains a multi-layer RNN on the Penn Treebank language modeling benchmark
   * [SN-GAN](gluon/sn_gan) - an example that utilizes spectral normalization to train GAN(Generative adversarial network) using Gluon API
 * [Image Classification with R](image-classification) - image classification on MNIST,CIFAR,ImageNet-1k,ImageNet-Full, with multiple GPU and distributed training.
-* [Kaggle 1st national data science bowl](kaggle-ndsb1) - a MXnet example for Kaggle Nation Data Science Bowl 1
 * [Kaggle 2nd national data science bowl](kaggle-ndsb2) - a tutorial for Kaggle Second Nation Data Science Bowl
-* [Memory Cost](memcost) - a script to show the memory cost of different allocation strategies
-* [Model Parallelism](model-parallel) - various model parallelism examples
-    * [Model Parallelism with LSTM](model-parallel/lstm) - an example showing how to do model parallelism with a LSTM
-    * [Model Parallelism with Matrix Factorization](model-parallel/lstm) - a matrix factorization algorithm for recommendations
-* [Module API](module) - examples with the Python Module API
 * [Multi-task Learning](multi-task) - how to use MXNet for multi-task learning
-* [MXNet Adversarial Variational Autoencoder](mxnet_adversarial_vae) - combines a variational autoencoder with a generative adversarial network
-* [Noise-contrastive estimation loss](nce-loss) - used to speedup multi-class classification
-* [Neural Style](neural-style) - use deep learning for style transfer in images
-* [Numpy Operator Customization](numpy-ops) - Examplea on quick customize new ops with Numpy
 * [Profiling](profiler) - generate profiling results in json files
-* [Quantization and Calibration Examples](quantization) - examples of quantizing a FP32 model to INT8 and performing low-precision inference with Intel MKL-DNN on CPU or cuDNN on GPU
-* [R-CNN](rcnn) - R-CNN with distributed implementation and data parallelization
+* [Quantization and Calibration Examples](quantization) - examples of quantizing a FP32 model to INT8 and performing low-precision inference with oneDNN on CPU or cuDNN on GPU
 * [Recommender Systems](recommenders) - examples of how to build various kinds of recommender systems
-* [Reinforcement Learning](reinforcement-learning) - a variety of reinforcement learning examples
-    * [A3C](reinforcement-learning/a3c)
-    * [DDPG](reinforcement-learning/ddpg) - example of training DDPG for CartPole
-    * [DQN](reinforcement-learning/dqn) - examples of training DQN and Double DQN to play Atari Games
-    * [Parallel Advantage-Actor Critic](reinforcement-learning/parallel_actor_critic)
 * [Restricted Boltzmann Machine](restricted-boltzmann-machine) - an example of the binary restricted Boltzmann machine learning MNIST
-* [RNN Time Major](rnn-time-major) - RNN implementation with Time-major layout
-* [Recurrent Neural Net](rnn) - creating recurrent neural networks models using high level `mxnet.rnn` interface
-* [Sparse](sparse) - a variety of sparse examples
-    * [Factorization Machine](sparse/factorization_machine)
-    * [Linear Classification](sparse/linear_classification)
-    * [Matrix Factorization](sparse/matrix_factorization)
-    * [Wide Deep](sparse/wide_deep)
 * [Single Shot MultiBox Detector](ssd) - SSD object recognition example
-* [Stochastic Depth](stochastic-depth) - implementation of the stochastic depth algorithm
-* [Support Vector Machine](svm_mnist) - an SVM example using MNIST
-* [Variational Auto Encoder](vae) - implements the Variational Auto Encoder in MXNet using MNIST
 
 ### <a name="deep-learning-examples-other"></a>Other Deep Learning Examples with MXNet
 
@@ -160,7 +125,7 @@ If your tutorial depends on specific packages, simply add them to this provision
 * "Learn to sort by LSTM" by [xlvector](https://github.com/xlvector) [github link](https://github.com/xlvector/learning-dl/tree/master/mxnet/lstm_sort) [Blog in Chinese](http://blog.xlvector.net/2016-05/mxnet-lstm-example/)
 * [Neural Art using extremely lightweight (<500K) neural network](https://github.com/pavelgonchar/neural-art-mini) Lightweight version of mxnet neural art implementation by [Pavel Gonchar](https://github.com/pavelgonchar)
 * [Neural Art with generative networks](https://github.com/zhaw/neural_style) by [zhaw](https://github.com/zhaw)
-* [Faster R-CNN in MXNet with distributed implementation and data parallelization](https://github.com/dmlc/mxnet/tree/master/example/rcnn)
+* [Faster R-CNN in MXNet with distributed implementation and data parallelization](https://github.com/apache/mxnet/tree/master/example/rcnn)
 * [Asynchronous Methods for Deep Reinforcement Learning in MXNet](https://github.com/zmonoid/Asyn-RL-MXNet/blob/master/mx_asyn.py) by [zmonoid](https://github.com/zmonoid)
 * [Deep Q-learning in MXNet](https://github.com/zmonoid/DQN-MXNet) by [zmonoid](https://github.com/zmonoid)
 * [Face Detection with End-to-End Integration of a ConvNet and a 3D Model (ECCV16)](https://github.com/tfwu/FaceDetection-ConvNet-3D) by [tfwu](https://github.com/tfwu), source code for paper Yunzhu Li, Benyuan Sun, Tianfu Wu and Yizhou Wang, "Face Detection with End-to-End Integration of a ConvNet and a 3D Model", ECCV 2016 <https://arxiv.org/abs/1606.00850>

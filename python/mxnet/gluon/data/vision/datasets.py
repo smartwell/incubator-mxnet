@@ -19,7 +19,7 @@
 # pylint: disable=
 """Dataset container."""
 __all__ = ['MNIST', 'FashionMNIST', 'CIFAR10', 'CIFAR100',
-           'ImageRecordDataset', 'ImageFolderDataset']
+           'ImageRecordDataset', 'ImageFolderDataset', 'ImageListDataset']
 
 import os
 import gzip
@@ -30,7 +30,10 @@ import numpy as np
 
 from .. import dataset
 from ...utils import download, check_sha1, _get_repo_file_url
-from .... import nd, image, recordio, base
+from .... import ndarray as nd, image, recordio, base
+from .... import numpy as _mx_np  # pylint: disable=reimported
+from ....util import is_np_array, default_array
+from ....base import numeric_types
 
 
 class MNIST(dataset._DownloadedDataset):
@@ -45,6 +48,7 @@ class MNIST(dataset._DownloadedDataset):
     train : bool, default True
         Whether to load the training or testing set.
     transform : function, default None
+        DEPRECATED FUNCTION ARGUMENTS.
         A user defined callback that transforms each sample. For example::
 
             transform=lambda data, label: (data.astype(np.float32)/255, label)
@@ -81,13 +85,16 @@ class MNIST(dataset._DownloadedDataset):
         with gzip.open(label_file, 'rb') as fin:
             struct.unpack(">II", fin.read(8))
             label = np.frombuffer(fin.read(), dtype=np.uint8).astype(np.int32)
+            if is_np_array():
+                label = _mx_np.array(label, dtype=label.dtype)
 
         with gzip.open(data_file, 'rb') as fin:
             struct.unpack(">IIII", fin.read(16))
             data = np.frombuffer(fin.read(), dtype=np.uint8)
             data = data.reshape(len(label), 28, 28, 1)
 
-        self._data = nd.array(data, dtype=data.dtype)
+        array_fn = _mx_np.array if is_np_array() else nd.array
+        self._data = array_fn(data, dtype=data.dtype)
         self._label = label
 
 
@@ -105,6 +112,7 @@ class FashionMNIST(MNIST):
     train : bool, default True
         Whether to load the training or testing set.
     transform : function, default None
+        DEPRECATED FUNCTION ARGUMENTS.
         A user defined callback that transforms each sample. For example::
 
             transform=lambda data, label: (data.astype(np.float32)/255, label)
@@ -137,6 +145,7 @@ class CIFAR10(dataset._DownloadedDataset):
     train : bool, default True
         Whether to load the training or testing set.
     transform : function, default None
+        DEPRECATED FUNCTION ARGUMENTS.
         A user defined callback that transforms each sample. For example::
 
             transform=lambda data, label: (data.astype(np.float32)/255, label)
@@ -183,8 +192,9 @@ class CIFAR10(dataset._DownloadedDataset):
         data = np.concatenate(data)
         label = np.concatenate(label)
 
-        self._data = nd.array(data, dtype=data.dtype)
-        self._label = label
+        array_fn = _mx_np.array if is_np_array() else nd.array
+        self._data = array_fn(data, dtype=data.dtype)
+        self._label = array_fn(label, dtype=label.dtype) if is_np_array() else label
 
 
 class CIFAR100(CIFAR10):
@@ -201,6 +211,7 @@ class CIFAR100(CIFAR10):
     train : bool, default True
         Whether to load the training or testing set.
     transform : function, default None
+        DEPRECATED FUNCTION ARGUMENTS.
         A user defined callback that transforms each sample. For example::
 
             transform=lambda data, label: (data.astype(np.float32)/255, label)
@@ -237,6 +248,7 @@ class ImageRecordDataset(dataset.RecordFileDataset):
         If 0, always convert images to greyscale. \
         If 1, always convert images to colored (RGB).
     transform : function, default None
+        DEPRECATED FUNCTION ARGUMENTS.
         A user defined callback that transforms each sample. For example::
 
             transform=lambda data, label: (data.astype(np.float32)/255, label)
@@ -244,6 +256,10 @@ class ImageRecordDataset(dataset.RecordFileDataset):
     """
     def __init__(self, filename, flag=1, transform=None):
         super(ImageRecordDataset, self).__init__(filename)
+        if transform is not None:
+            raise DeprecationWarning(
+                'Directly apply transform to dataset is deprecated. '
+                'Please use dataset.transform() or dataset.transform_first() instead...')
         self._flag = flag
         self._transform = transform
 
@@ -253,6 +269,11 @@ class ImageRecordDataset(dataset.RecordFileDataset):
         if self._transform is not None:
             return self._transform(image.imdecode(img, self._flag), header.label)
         return image.imdecode(img, self._flag), header.label
+
+    def __mx_handle__(self):
+        from .._internal import ImageRecordFileDataset as _ImageRecordFileDataset
+        return _ImageRecordFileDataset(rec_file=self.filename, idx_file=self.idx_file,
+                                       flag=self._flag)
 
 
 class ImageFolderDataset(dataset.Dataset):
@@ -275,6 +296,7 @@ class ImageFolderDataset(dataset.Dataset):
         If 0, always convert loaded images to greyscale (1 channel).
         If 1, always convert loaded images to colored (3 channels).
     transform : callable, default None
+        DEPRECATED FUNCTION ARGUMENTS.
         A function that takes data and label and transforms them::
 
             transform = lambda data, label: (data.astype(np.float32)/255, label)
@@ -289,9 +311,14 @@ class ImageFolderDataset(dataset.Dataset):
     def __init__(self, root, flag=1, transform=None):
         self._root = os.path.expanduser(root)
         self._flag = flag
+        if transform is not None:
+            raise DeprecationWarning(
+                'Directly apply transform to dataset is deprecated. '
+                'Please use dataset.transform() or dataset.transform_first() instead...')
         self._transform = transform
         self._exts = ['.jpg', '.jpeg', '.png']
         self._list_images(self._root)
+        self._handle = None
 
     def _list_images(self, root):
         self.synsets = []
@@ -300,7 +327,7 @@ class ImageFolderDataset(dataset.Dataset):
         for folder in sorted(os.listdir(root)):
             path = os.path.join(root, folder)
             if not os.path.isdir(path):
-                warnings.warn('Ignoring %s, which is not a directory.'%path, stacklevel=3)
+                warnings.warn(f'Ignoring {path}, which is not a directory.', stacklevel=3)
                 continue
             label = len(self.synsets)
             self.synsets.append(folder)
@@ -308,8 +335,7 @@ class ImageFolderDataset(dataset.Dataset):
                 filename = os.path.join(path, filename)
                 ext = os.path.splitext(filename)[1]
                 if ext.lower() not in self._exts:
-                    warnings.warn('Ignoring %s of type %s. Only support %s'%(
-                        filename, ext, ', '.join(self._exts)))
+                    warnings.warn(f'Ignoring {filename} of type {ext}. Only support {", ".join(self._exts)}')
                     continue
                 self.items.append((filename, label))
 
@@ -322,3 +348,107 @@ class ImageFolderDataset(dataset.Dataset):
 
     def __len__(self):
         return len(self.items)
+
+    def __mx_handle__(self):
+        if self._handle is None:
+            from .._internal import ImageSequenceDataset, NDArrayDataset, GroupDataset
+            path_sep = '|'
+            im_names = path_sep.join([x[0] for x in self.items])
+            label = default_array([x[1] for x in self.items])
+            self._handle = GroupDataset(datasets=(
+                ImageSequenceDataset(img_list=im_names, path_sep=path_sep, flag=self._flag),
+                NDArrayDataset(arr=label)))
+        return self._handle
+
+
+class ImageListDataset(dataset.Dataset):
+    """A dataset for loading image files specified by a list of entries.
+
+    like::
+
+        # if written to text file *.lst
+        0\t0\troot/car/0001.jpg
+        1\t0\troot/car/xxxa.jpg
+        2\t0\troot/car/yyyb.jpg
+        3\t1\troot/bus/123.jpg
+        4\t1\troot/bus/023.jpg
+        5\t1\troot/bus/wwww.jpg
+
+        # if as a pure list, each item is a list [imagelabel: float or list of float, imgpath]
+        [[0, root/car/0001.jpg]
+         [0, root/car/xxxa.jpg]
+         [0, root/car/yyyb.jpg]
+         [1, root/bus/123.jpg]
+         [1, root/bus/023.jpg]
+         [1, root/bus/wwww.jpg]]
+
+    Parameters
+    ----------
+    root : str
+        Path to root directory.
+    imglist : str or list
+        Specify the path of imglist file or a list directly
+    flag : {0, 1}, default 1
+        If 0, always convert loaded images to greyscale (1 channel).
+        If 1, always convert loaded images to colored (3 channels).
+
+    Attributes
+    ----------
+    items : list of tuples
+        List of all images in (filename, label) pairs.
+    """
+    def __init__(self, root='.', imglist=None, flag=1):
+        self._root = os.path.expanduser(root)
+        self._flag = flag
+        self._imglist = {}
+        self._imgkeys = []
+        self._handle = None
+        array_fn = _mx_np.array if is_np_array() else nd.array
+        if isinstance(imglist, str):
+            # read from file
+            fname = os.path.join(self._root, imglist)
+            with open(fname, 'rt') as fin:
+                for line in iter(fin.readline, ''):
+                    line = line.strip().split('\t')
+                    label = array_fn(line[1:-1])
+                    key = int(line[0])
+                    self._imglist[key] = (label, os.path.join(self._root, line[-1]))
+                    self._imgkeys.append(key)
+        elif isinstance(imglist, list):
+            index = 1
+            for img in imglist:
+                key = str(index)
+                index += 1
+                if len(img) > 2:
+                    label = array_fn(img[:-1])
+                elif isinstance(img[0], numeric_types):
+                    label = array_fn([img[0]])
+                else:
+                    label = array_fn(img[0])
+                assert isinstance(img[-1], str)
+                self._imglist[key] = (label, os.path.join(self._root, img[-1]))
+                self._imgkeys.append(key)
+        else:
+            raise ValueError(
+                "imglist must be filename or list of valid entries, given {}".format(
+                    type(imglist)))
+
+    def __getitem__(self, idx):
+        key = self._imgkeys[idx]
+        img = image.imread(self._imglist[key][1], self._flag)
+        label = self._imglist[key][0]
+        return img, label
+
+    def __len__(self):
+        return len(self._imgkeys)
+
+    def __mx_handle__(self):
+        if self._handle is None:
+            from .._internal import ImageSequenceDataset, NDArrayDataset, GroupDataset
+            path_sep = '|'
+            im_names = path_sep.join([self._imglist[x][1] for x in self._imgkeys])
+            label = default_array(np.array([self._imglist[x][0].asnumpy() for x in self._imgkeys]))
+            self._handle = GroupDataset(datasets=(
+                ImageSequenceDataset(img_list=im_names, path_sep=path_sep, flag=self._flag),
+                NDArrayDataset(arr=label)))
+        return self._handle

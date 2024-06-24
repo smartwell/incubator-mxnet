@@ -29,7 +29,9 @@
  * Rename params file epoch number starts from zero.
  */
 
+#if _MSC_VER
 #pragma warning(disable: 4996)  // VS2015 complains on 'std::copy' ...
+#endif
 #include <cstring>
 #include <iostream>
 #include <fstream>
@@ -123,7 +125,8 @@ Symbol LSTMUnroll(int num_lstm_layer, int sequence_length, int input_dim,
     hidden_all.push_back(hidden);
   }
 
-  auto hidden_concat = isTrain? Concat(hidden_all, hidden_all.size(), 0) : hidden_all[0];
+  auto hidden_concat =
+      isTrain ? Concat(hidden_all, hidden_all.size(), dmlc::optional<int>(0)) : hidden_all[0];
   auto cls_weight = Symbol::Variable("cls_weight");
   auto cls_bias = Symbol::Variable("cls_bias");
   auto pred = FullyConnected("pred", hidden_concat, cls_weight, cls_bias, input_dim);
@@ -197,7 +200,9 @@ class Shuffler {
       *p++ = i;
   }
   void shuffle(std::function<void(int, int)> lambda = nullptr) {
-    random_shuffle(sequence.begin(), sequence.end());
+    std::random_device rd;
+    std::mt19937 g(rd());
+    std::shuffle(sequence.begin(), sequence.end(), g);
     int n = 0;
     if (lambda != nullptr)
       for (int i : sequence)
@@ -457,9 +462,10 @@ void train(const std::string file, int batch_size, int max_epoch, int start_epoc
   Executor* exe = RNN.SimpleBind(device, args_map);
 
   if (start_epoch == -1) {
-    Xavier xavier = Xavier(Xavier::gaussian, Xavier::in, 2.34);
-    for (auto &arg : exe->arg_dict())
-      xavier(arg.first, &arg.second);
+    auto initializer = Uniform(0.07);
+    for (auto &arg : exe->arg_dict()) {
+      initializer(arg.first, &arg.second);
+    }
   } else {
     LoadCheckpoint(prefix + "-" + std::to_string(start_epoch) + ".params", exe);
   }

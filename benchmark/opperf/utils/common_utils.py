@@ -19,8 +19,6 @@ import os
 import json
 from operator import itemgetter
 
-from collections import ChainMap
-
 import logging
 logging.basicConfig(level=logging.INFO)
 
@@ -41,10 +39,17 @@ def merge_map_list(map_list):
     map where all individual maps in the into map_list are merged
 
     """
-    return dict(ChainMap(*map_list))
+    # Preserve order of underlying maps and keys when converting to a single map
+    final_map = dict()
+
+    for current_map in map_list:
+        for key in current_map:
+            final_map[key] =  current_map[key]
+
+    return final_map
 
 
-def save_to_file(inp_dict, out_filepath, out_format='json', runtime_features=None):
+def save_to_file(inp_dict, out_filepath, out_format='json', runtime_features=None, profiler='native'):
     """Saves the given input dictionary to the given output file.
 
     By default, saves the input dictionary as JSON file. Other supported formats include:
@@ -65,13 +70,13 @@ def save_to_file(inp_dict, out_filepath, out_format='json', runtime_features=Non
     if out_format == 'json':
         # Save as JSON
         with open(out_filepath, "w") as result_file:
-            json.dump(inp_dict, result_file, indent=4, sort_keys=True)
+            json.dump(inp_dict, result_file, indent=4, sort_keys=False)
     elif out_format == 'md':
         # Save as md
         with open(out_filepath, "w") as result_file:
-            result_file.write(_prepare_markdown(inp_dict, runtime_features))
+            result_file.write(_prepare_markdown(inp_dict, runtime_features, profiler))
     else:
-        raise ValueError("Invalid output file format provided - '{}'. Supported - json, md".format(format))
+        raise ValueError(f"Invalid output file format provided - '{out_format}'. Supported - json, md")
 
 
 def get_json(inp_dict):
@@ -90,12 +95,17 @@ def get_json(inp_dict):
     return json.dumps(inp_dict, indent=4)
 
 
-def _prepare_op_benchmark_result(op, op_bench_result):
+def _prepare_op_benchmark_result(op, op_bench_result, profiler):
     operator_name = op
     avg_forward_time = "---"
     avg_backward_time = "---"
     max_mem_usage = "---"
     inputs = "---"
+    avg_time = "---"
+    p50_time = "---"
+    p90_time = "---"
+    p99_time = "---"
+
     for key, value in op_bench_result.items():
         if "avg_time_forward" in key:
             avg_forward_time = value
@@ -105,26 +115,44 @@ def _prepare_op_benchmark_result(op, op_bench_result):
             max_mem_usage = value
         elif "inputs" in key:
             inputs = value
-    return "| {} | {} | {} | {} | {} |".format(operator_name, avg_forward_time, avg_backward_time,
-                                               max_mem_usage, inputs)
+        elif "avg_time" in key:
+            avg_time = value
+        elif "p50_time" in key:
+            p50_time = value
+        elif "p90_time" in key:
+            p90_time = value
+        elif "p99_time" in key:
+            p99_time = value
+
+    result = ""
+    if profiler == "native":
+        result = f"| {operator_name} | {inputs} | {max_mem_usage} | {avg_forward_time} | {avg_backward_time} |"
+    elif profiler == "python":
+        result = f"| {operator_name} | {avg_time} | {p50_time} | {p90_time} | {p99_time} | {inputs} |"
+    return result
 
 
-def _prepare_markdown(results, runtime_features=None):
+def _prepare_markdown(results, runtime_features=None, profiler='native'):
     results_markdown = []
     if runtime_features and 'runtime_features' in runtime_features:
         results_markdown.append("# Runtime Features")
         idx = 0
         for key, value in runtime_features['runtime_features'].items():
-            results_markdown.append('{}. {} : {}'.format(idx, key, value))
+            results_markdown.append(f'{idx}. {key} : {value}')
 
     results_markdown.append("# Benchmark Results")
-    results_markdown.append(
-        "| Operator | Avg Forward Time (ms) | Avg. Backward Time (ms) | Max Mem Usage (Storage) (Bytes)"
-        " | Inputs |")
-    results_markdown.append("| :---: | :---: | :---: | :---:| :--- |")
+    if profiler == 'native':
+        results_markdown.append(
+            "| Operator | Inputs | Max Mem Usage (Storage) (Bytes) | Avg Forward Time (ms)"
+            " | Avg. Backward Time (ms) |")
+        results_markdown.append("| :---: | :---: | :---: | :---: | :---: |")
+    elif profiler == 'python':
+        results_markdown.append(
+            "| Operator | Avg Time (ms) | P50 Time (ms) | P90 Time (ms) | P99 Time (ms) | Inputs |")
+        results_markdown.append("| :---: | :---: | :---: | :---: | :---: | :---: |")
 
     for op, op_bench_results in sorted(results.items(), key=itemgetter(0)):
         for op_bench_result in op_bench_results:
-            results_markdown.append(_prepare_op_benchmark_result(op, op_bench_result))
+            results_markdown.append(_prepare_op_benchmark_result(op, op_bench_result, profiler))
 
     return os.linesep.join(results_markdown)

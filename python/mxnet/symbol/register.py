@@ -17,18 +17,19 @@
 
 # pylint: disable=unused-import
 """Register backend ops in mxnet.symbol namespace."""
-from __future__ import absolute_import
 import os as _os
 import ctypes
 import numpy as _np
 
 from . import _internal
+from .. import name as _name, attribute
 from ._internal import SymbolBase, _symbol_creator
-from ..attribute import AttrScope
 from ..base import mx_uint, check_call, _LIB, py_str
 from ..symbol_doc import _build_doc
-from ..base import _Null, _init_op_module, _is_np_op
+from ..base import _Null, _init_op_module, _is_np_op, _output_is_list
 from ..name import NameManager
+from ..profiler import _current_scope as _profiler_scope
+from ..ndarray import get_dtype_name
 # pylint: enable=unused-import
 
 
@@ -122,19 +123,19 @@ def _generate_symbol_function_code(handle, op_name, func_name, signature_only=Fa
         name, atype = arg_names[i], arg_types[i]
         if name == 'dtype':
             dtype_name = name
-            signature.append('%s=_Null'%name)
+            signature.append(f'{name}=_Null')
         elif atype.startswith('NDArray') or atype.startswith('Symbol'):
             assert not arr_name, \
                 "Op can only have one argument with variable " \
                 "size and it must be the last argument."
             if atype.endswith('[]'):
-                ndsignature.append('*%s'%name)
+                ndsignature.append(f'*{name}')
                 arr_name = name
             else:
-                ndsignature.append('%s=None'%name)
+                ndsignature.append(f'{name}=None')
                 ndarg_names.append(name)
         else:
-            signature.append('%s=_Null'%name)
+            signature.append(f'{name}=_Null')
             kwarg_names.append(name)
     #signature.append('is_train=False')
     signature.append('name=None')
@@ -144,6 +145,7 @@ def _generate_symbol_function_code(handle, op_name, func_name, signature_only=Fa
     signature = ndsignature + signature
 
     is_np_op = _is_np_op(op_name)
+    output_is_list = _output_is_list(op_name)
     verify_symbol_fn = _verify_np_symbol.__name__ if is_np_op else _verify_legacy_symbol.__name__
     code = []
     if arr_name:
@@ -161,17 +163,12 @@ def %s(*%s, **kwargs):"""%(func_name, arr_name))
             if dtype_name is not None:
                 code.append("""
     if '%s' in kwargs:
-        kwargs['%s'] = _np.dtype(kwargs['%s']).name"""%(
-            dtype_name, dtype_name, dtype_name))
+        kwargs['%s'] = get_dtype_name(kwargs['%s'])"""%(dtype_name, dtype_name, dtype_name))
             code.append("""
     attr = kwargs.pop('attr', None)
-    if not hasattr(AttrScope._current, "value"):
-        AttrScope._current.value = AttrScope()
-    kwargs.update(AttrScope._current.value.get(attr))
+    kwargs.update(attribute.current().get(attr))
     name = kwargs.pop('name', None)
-    if not hasattr(NameManager._current, "value"):
-        NameManager._current.value = NameManager()
-    name = NameManager._current.value.get(name, '%s')
+    name = _name.current().get(name, '%s')
     _ = kwargs.pop('out', None)
     keys = []
     vals = []
@@ -191,16 +188,17 @@ def %s(*%s, **kwargs):"""%(func_name, arr_name))
             key_var_num_args, key_var_num_args))
 
             code.append("""
-    return _symbol_creator(%d, sym_args, sym_kwargs, keys, vals, name, %s)"""%(
-        handle.value, str(is_np_op)))
+    if 'profiler_scope' not in keys:
+        keys.append('profiler_scope')
+        vals.append(_profiler_scope.get())
+    return _symbol_creator(%d, sym_args, sym_kwargs, keys, vals, name, %s, %s)"""%(
+                handle.value, str(is_np_op), str(output_is_list)))
     else:
         code.append("""
 def %s(%s):"""%(func_name, ', '.join(signature)))
         if not signature_only:
             code.append("""
-    if not hasattr(AttrScope._current, "value"):
-        AttrScope._current.value = AttrScope()
-    kwargs.update(AttrScope._current.value.get(attr))
+    kwargs.update(attribute.current().get(attr))
     sym_kwargs = dict()
     _keys = []
     _vals = []
@@ -233,19 +231,20 @@ def %s(%s):"""%(func_name, ', '.join(signature)))
                     code.append("""
     if %s is not _Null and %s is not None:
         _keys.append('%s')
-        _vals.append(_np.dtype(%s).name)"""%(dtype_name, dtype_name, dtype_name, dtype_name))
+        _vals.append(get_dtype_name(%s))"""%(dtype_name, dtype_name, dtype_name, dtype_name))
                 else:
                     code.append("""
     if %s is not _Null:
         _keys.append('%s')
-        _vals.append(_np.dtype(%s).name)"""%(dtype_name, dtype_name, dtype_name))
+        _vals.append(get_dtype_name(%s))"""%(dtype_name, dtype_name, dtype_name))
 
             code.append("""
-    if not hasattr(NameManager._current, "value"):
-        NameManager._current.value = NameManager()
-    name = NameManager._current.value.get(name, '%s')
-    return _symbol_creator(%d, None, sym_kwargs, _keys, _vals, name, %s)"""%(
-        func_name.lower(), handle.value, str(is_np_op)))
+    name = _name.current().get(name, '%s')
+    if 'profiler_scope' not in _keys:
+        _keys.append('profiler_scope')
+        _vals.append(_profiler_scope.get())
+    return _symbol_creator(%d, None, sym_kwargs, _keys, _vals, name, %s, %s)"""%(
+        func_name.lower(), handle.value, str(is_np_op), str(output_is_list)))
 
     if signature_only:
         code.append("""

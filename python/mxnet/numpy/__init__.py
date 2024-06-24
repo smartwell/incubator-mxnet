@@ -17,7 +17,6 @@
 
 """MXNet NumPy module."""
 
-from __future__ import division, absolute_import, print_function
 
 from . import random
 from . import linalg
@@ -26,5 +25,11 @@ from . import _op
 from . import _register
 from ._op import *  # pylint: disable=wildcard-import
 from .utils import *  # pylint: disable=wildcard-import
+from .function_base import *  # pylint: disable=wildcard-import
+from .stride_tricks import *  # pylint: disable=wildcard-import
+from .set_functions import *  # pylint: disable=wildcard-import
+from .type_functions import * # pylint: disable=wildcard-import
+from .io import *  # pylint: disable=wildcard-import
+from .arrayprint import *  # pylint: disable=wildcard-import
 
 __all__ = []

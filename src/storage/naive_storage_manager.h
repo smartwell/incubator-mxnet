@@ -18,7 +18,6 @@
  */
 
 /*!
- * Copyright (c) 2015 by Contributors
  * \file naive_storage_manager.h
  * \brief Naive storage manager.
  */
@@ -26,7 +25,6 @@
 #define MXNET_STORAGE_NAIVE_STORAGE_MANAGER_H_
 
 #include "storage_manager.h"
-#include "mxnet/base.h"
 
 namespace mxnet {
 namespace storage {
@@ -45,7 +43,7 @@ class NaiveStorageManager final : public StorageManager {
    * \brief Default destructor.
    */
   ~NaiveStorageManager() = default;
-  void Alloc(Storage::Handle* handle) override;
+  void Alloc(Storage::Handle* handle, bool failsafe) override;
   void Free(Storage::Handle handle) override;
 
   void DirectFree(Storage::Handle handle) override {
@@ -57,8 +55,8 @@ class NaiveStorageManager final : public StorageManager {
 };  // class NaiveStorageManager
 
 template <class DeviceStorage>
-void NaiveStorageManager<DeviceStorage>::Alloc(Storage::Handle* handle) {
-  DeviceStorage::Alloc(handle);
+void NaiveStorageManager<DeviceStorage>::Alloc(Storage::Handle* handle, bool failsafe) {
+  DeviceStorage::Alloc(handle, failsafe);
 }
 
 template <class DeviceStorage>

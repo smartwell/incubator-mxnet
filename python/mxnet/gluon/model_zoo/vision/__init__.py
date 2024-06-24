@@ -59,8 +59,8 @@ The transformation should preferrably happen at preprocessing. You can use
 
     image = image/255
     normalized = mx.image.color_normalize(image,
-                                          mean=mx.nd.array([0.485, 0.456, 0.406]),
-                                          std=mx.nd.array([0.229, 0.224, 0.225]))
+                                          mean=mx.np.array([0.485, 0.456, 0.406]),
+                                          std=mx.np.array([0.229, 0.224, 0.225]))
 
 .. _AlexNet: https://arxiv.org/abs/1404.5997
 .. _DenseNet: https://arxiv.org/abs/1608.06993
@@ -106,7 +106,7 @@ def get_model(name, **kwargs):
 
     Returns
     -------
-    HybridBlock
+    gluon.HybridBlock
         The model.
     """
     models = {'resnet18_v1': resnet18_v1,
@@ -147,6 +147,5 @@ def get_model(name, **kwargs):
     name = name.lower()
     if name not in models:
         raise ValueError(
-            'Model %s is not supported. Available options are\n\t%s' % (
-                name, '\n\t'.join(sorted(models.keys()))))
+            "Model {} is not supported. Available options are\n\t{}".format(name, '\n\t'.join(sorted(models.keys()))))
     return models[name](**kwargs)

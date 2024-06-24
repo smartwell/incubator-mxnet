@@ -48,10 +48,9 @@ opt = parser.parse_args()
 # define network
 
 net = nn.Sequential()
-with net.name_scope():
-    net.add(nn.Dense(128, activation='relu'))
-    net.add(nn.Dense(64, activation='relu'))
-    net.add(nn.Dense(10))
+net.add(nn.Dense(128, activation='relu'))
+net.add(nn.Dense(64, activation='relu'))
+net.add(nn.Dense(10))
 
 # data
 
@@ -60,20 +59,20 @@ def transformer(data, label):
     return data, label
 
 train_data = gluon.data.DataLoader(
-    gluon.data.vision.MNIST('./data', train=True, transform=transformer),
+    gluon.data.vision.MNIST('./data', train=True).transform(transformer),
     batch_size=opt.batch_size, shuffle=True, last_batch='discard')
 
 val_data = gluon.data.DataLoader(
-    gluon.data.vision.MNIST('./data', train=False, transform=transformer),
+    gluon.data.vision.MNIST('./data', train=False).transform(transformer),
     batch_size=opt.batch_size, shuffle=False)
 
 # train
 
 def test(ctx):
-    metric = mx.metric.Accuracy()
+    metric = mx.gluon.metric.Accuracy()
     for data, label in val_data:
-        data = data.as_in_context(ctx)
-        label = label.as_in_context(ctx)
+        data = data.to_device(ctx)
+        label = label.to_device(ctx)
         output = net(data)
         metric.update([label], [output])
 
@@ -86,7 +85,7 @@ def train(epochs, ctx):
     # Trainer is for updating parameters with gradient.
     trainer = gluon.Trainer(net.collect_params(), 'sgd',
                             {'learning_rate': opt.lr, 'momentum': opt.momentum})
-    metric = mx.metric.Accuracy()
+    metric = mx.gluon.metric.Accuracy()
     loss = gluon.loss.SoftmaxCrossEntropyLoss()
 
     for epoch in range(epochs):
@@ -94,8 +93,8 @@ def train(epochs, ctx):
         metric.reset()
         for i, (data, label) in enumerate(train_data):
             # Copy data to ctx if necessary
-            data = data.as_in_context(ctx)
-            label = label.as_in_context(ctx)
+            data = data.to_device(ctx)
+            label = label.to_device(ctx)
             # Start recording computation graph with record() section.
             # Recorded graphs can then be differentiated with backward.
             with autograd.record():
@@ -109,13 +108,13 @@ def train(epochs, ctx):
 
             if i % opt.log_interval == 0 and i > 0:
                 name, acc = metric.get()
-                print('[Epoch %d Batch %d] Training: %s=%f'%(epoch, i, name, acc))
+                print(f'[Epoch {epoch} Batch {i}] Training: {name}={acc}')
 
         name, acc = metric.get()
-        print('[Epoch %d] Training: %s=%f'%(epoch, name, acc))
+        print(f'[Epoch {epoch}] Training: {name}={acc}')
 
         name, val_acc = test(ctx)
-        print('[Epoch %d] Validation: %s=%f'%(epoch, name, val_acc))
+        print(f'[Epoch {epoch}] Validation: {name}={val_acc}')
 
     net.save_parameters('mnist.params')
 

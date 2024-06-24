@@ -212,7 +212,7 @@ NDArray ResizeInput(NDArray data, const Shape new_shape) {
 
 int main(int argc, char const *argv[]) {
   /*basic config*/
-  int max_epo = argc > 1 ? strtol(argv[1], NULL, 10) : 100;
+  int max_epo = argc > 1 ? strtol(argv[1], nullptr, 10) : 100;
   float learning_rate = 1e-4;
   float weight_decay = 1e-4;
 
@@ -221,7 +221,7 @@ int main(int argc, char const *argv[]) {
   int num_gpu;
   MXGetGPUCount(&num_gpu);
   int batch_size = 32;
-#if !MXNET_USE_CPU
+#if MXNET_USE_CUDA
   if (num_gpu > 0) {
     ctx = Context::gpu();
     batch_size = 256;
@@ -251,11 +251,11 @@ int main(int argc, char const *argv[]) {
   /*if fine tune from some pre-trained model, we should load the parameters*/
   // NDArray::Load("./model/alex_params_3", nullptr, &args_map);
   /*else, we should use initializer Xavier to init the params*/
-  Xavier xavier = Xavier(Xavier::gaussian, Xavier::in, 2.34);
+  auto initializer = Uniform(0.07);
   for (auto &arg : args_map) {
     /*be careful here, the arg's name must has some specific ends or starts for
      * initializer to call*/
-    xavier(arg.first, &arg.second);
+    initializer(arg.first, &arg.second);
   }
 
   /*these binary files should be generated using im2rc tools, which can be found

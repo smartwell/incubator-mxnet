@@ -18,7 +18,6 @@
  */
 
 /*!
- *  Copyright (c) 2016 by Contributors
  * \file op_attr_types.h
  * \brief Additional operator attributes
  *  beside the ones provided by NNVM
@@ -31,6 +30,7 @@
 
 #include <vector>
 #include <functional>
+#include <string>
 
 #include "./base.h"
 #include "./ndarray.h"
@@ -58,7 +58,7 @@ enum OpReqType {
 };
 
 /*!
- * \brief All the possible information needed by Operator.Forward and Backward
+ * \brief All the possible information needed by Operator.
  *  This is the superset of RunContext.
  *  We use this data structure to bookkeep everything needed by Forward and Backward.
  * \sa Resource
@@ -79,7 +79,7 @@ struct OpContext {
    * \return the mshadow stream
    * \tparam xpu the device type of the stream
    */
-  template<typename xpu>
+  template <typename xpu>
   inline mshadow::Stream<xpu>* get_stream() const {
     return run_ctx.get_stream<xpu>();
   }
@@ -131,6 +131,16 @@ enum class DispatchMode {
   kVariable,
 };
 
+/*! \brief the quantization type of the operator */
+enum class QuantizeType {
+  // This operator doesn't support quantization
+  kNone = 0,
+  // This operator can get huge benefit from quantization, thus must be quantized
+  kMust,
+  // This operator support quantization, but will be decided depending on the connection
+  kSupport,
+};
+
 /*!
  * \brief Operator state. This is a pointer type, its content is mutable
  *  even if OpStatePtr is const.
@@ -140,18 +150,16 @@ class OpStatePtr {
   /* \brief Create a OpStatePtr with state of type T.
    * \param args Arguments passed to T's constructor.
    */
-  template<typename T, typename... Args>
+  template <typename T, typename... Args>
   static OpStatePtr Create(Args&&... args) {
     OpStatePtr ret;
     auto state = new T(std::forward<Args>(args)...);
-    auto var = Engine::Get()->NewVariable();
-    ret.ptr_.reset(
-      new OpState(var, state),
-      [](OpState* p) {
-        Engine::Get()->DeleteVariable([](RunContext s) {}, Context::CPU(), p->var);
-        delete reinterpret_cast<T*>(p->state);
-        delete p;
-      });
+    auto var   = Engine::Get()->NewVariable();
+    ret.ptr_.reset(new OpState(var, state), [](OpState* p) {
+      Engine::Get()->DeleteVariable([](RunContext s) {}, Context::CPU(), p->var);
+      delete reinterpret_cast<T*>(p->state);
+      delete p;
+    });
 
     return ret;
   }
@@ -160,7 +168,7 @@ class OpStatePtr {
     return ptr_->var;
   }
   /* \brief Get state of type T */
-  template<typename T>
+  template <typename T>
   T& get_state() const {
     return *reinterpret_cast<T*>(ptr_->state);
   }
@@ -204,14 +212,25 @@ class OpStatePtr {
  *
  *  \note Register under "FCreateLayerOp"
  */
-using FCreateOpState = std::function<OpStatePtr (const NodeAttrs& attrs,
-                                                 Context ctx,
-                                                 const mxnet::ShapeVector& in_shape,
-                                                 const std::vector<int>& in_type)>;
+using FCreateOpState = std::function<OpStatePtr(const NodeAttrs& attrs,
+                                                Context ctx,
+                                                const mxnet::ShapeVector& in_shape,
+                                                const std::vector<int>& in_type)>;
+
+/*!
+ * \brief Whether the operator always produces the same
+ *        output given the same input.
+ *        This enables certain optimizations
+ *        like common expression elimination.
+ *
+ * \note Register under "THasDeterministicOutput"
+ */
+using THasDeterministicOutput = bool;
+
 /*!
  * \brief Execution mode of this operator.
  */
-using FExecType = std::function<ExecType (const NodeAttrs& attrs)>;
+using FExecType = std::function<ExecType(const NodeAttrs& attrs)>;
 /*!
  * \brief Resiger a compute function for stateful operator.
  *  OpStatePtr is a pointer type, it's content is mutable even if
@@ -219,11 +238,11 @@ using FExecType = std::function<ExecType (const NodeAttrs& attrs)>;
  *
  * \note Register under "FStatefulCompute<cpu>" and "FStatefulCompute<gpu>"
  */
-using FStatefulCompute = std::function<void (const OpStatePtr& state,
-                                             const OpContext& ctx,
-                                             const std::vector<TBlob>& inputs,
-                                             const std::vector<OpReqType>& req,
-                                             const std::vector<TBlob>& outputs)>;
+using FStatefulCompute = std::function<void(const OpStatePtr& state,
+                                            const OpContext& ctx,
+                                            const std::vector<TBlob>& inputs,
+                                            const std::vector<OpReqType>& req,
+                                            const std::vector<TBlob>& outputs)>;
 /*!
  * \brief Resiger a compute function for stateful operator using NDArray interface.
  *  OpStatePtr is a pointer type, it's content is mutable even if
@@ -231,19 +250,18 @@ using FStatefulCompute = std::function<void (const OpStatePtr& state,
  *
  * \note Register under "FStatefulComputeEx<cpu>" and "FStatefulComputeEx<gpu>"
  */
-using FStatefulComputeEx = std::function<void (const OpStatePtr& state,
-                                               const OpContext& ctx,
-                                               const std::vector<NDArray>& inputs,
-                                               const std::vector<OpReqType>& req,
-                                               const std::vector<NDArray>& outputs)>;
+using FStatefulComputeEx = std::function<void(const OpStatePtr& state,
+                                              const OpContext& ctx,
+                                              const std::vector<NDArray>& inputs,
+                                              const std::vector<OpReqType>& req,
+                                              const std::vector<NDArray>& outputs)>;
 /*!
  * \brief The resource request from the operator.
  *        An operator could register ResourceRequestEx, or ResourceRequest, or neither.
  *
  * \note Register under "FResourceRequest"
  */
-using FResourceRequest = std::function<
-  std::vector<ResourceRequest> (const NodeAttrs& n)>;
+using FResourceRequest = std::function<std::vector<ResourceRequest>(const NodeAttrs& n)>;
 /*!
  * \brief The resource request from the operator.
  *        An operator could register ResourceRequestEx, or ResourceRequest, or neither.
@@ -252,38 +270,38 @@ using FResourceRequest = std::function<
  *
  * \note Register under "FResourceRequestEx"
  */
-using FResourceRequestEx = std::function<
-  std::vector<ResourceRequest> (const NodeAttrs& n,
-                                const int dev_mask,
-                                const DispatchMode dispatch_mode)>;
+using FResourceRequestEx =
+    std::function<std::vector<ResourceRequest>(const NodeAttrs& n,
+                                               const int dev_mask,
+                                               const DispatchMode dispatch_mode)>;
 /*!
  * \brief Register an operator called as a NDArray function
  *
  * \note Register under "FNDArrayFunction"
  */
-using FNDArrayFunction = std::function<void (const nnvm::NodeAttrs& attrs,
-                                             const std::vector<NDArray>& inputs,
-                                             std::vector<NDArray>* outputs)>;
+using FNDArrayFunction = std::function<void(const nnvm::NodeAttrs& attrs,
+                                            const std::vector<NDArray>& inputs,
+                                            std::vector<NDArray>* outputs)>;
 /*!
  * \brief Register a compute function for simple stateless forward only operator
  *
  * \note Register under "FCompute<cpu>" and "FCompute<gpu>"
  */
-using FCompute = std::function<void (const nnvm::NodeAttrs& attrs,
-                                     const OpContext& ctx,
-                                     const std::vector<TBlob>& inputs,
-                                     const std::vector<OpReqType>& req,
-                                     const std::vector<TBlob>& outputs)>;
+using FCompute = std::function<void(const nnvm::NodeAttrs& attrs,
+                                    const OpContext& ctx,
+                                    const std::vector<TBlob>& inputs,
+                                    const std::vector<OpReqType>& req,
+                                    const std::vector<TBlob>& outputs)>;
 /*!
  * \brief Register an NDArray compute function for simple stateless forward only operator
  * \note Register under "FComputeEx<xpu>" and "FComputeEx<xpu>"
  *       Dispatched only when inferred dispatch_mode is FDispatchComputeEx
  */
-using FComputeEx = std::function<void (const nnvm::NodeAttrs& attrs,
-                                       const OpContext& ctx,
-                                       const std::vector<NDArray>& inputs,
-                                       const std::vector<OpReqType>& req,
-                                       const std::vector<NDArray>& outputs)>;
+using FComputeEx = std::function<void(const nnvm::NodeAttrs& attrs,
+                                      const OpContext& ctx,
+                                      const std::vector<NDArray>& inputs,
+                                      const std::vector<OpReqType>& req,
+                                      const std::vector<NDArray>& outputs)>;
 
 /*!
  * \brief Register a storage and dispatch mode inference function based on
@@ -291,17 +309,23 @@ using FComputeEx = std::function<void (const nnvm::NodeAttrs& attrs,
  *
  * \note Register under "FInferStorageType"
  */
-using FInferStorageType = std::function<bool (const NodeAttrs& attrs,
-                                              const int dev_mask,
-                                              DispatchMode* dispatch_mode,
-                                              std::vector<int>* in_attrs,
-                                              std::vector<int>* out_attrs)>;
+using FInferStorageType = std::function<bool(const NodeAttrs& attrs,
+                                             const int dev_mask,
+                                             DispatchMode* dispatch_mode,
+                                             std::vector<int>* in_attrs,
+                                             std::vector<int>* out_attrs)>;
 
 /*!
  * \brief Register a quantized node creation function based on the attrs of the node
  * \note Register under "FQuantizedOp" for non-quantized operators
  */
-using FQuantizedOp = std::function<nnvm::NodePtr (const NodeAttrs& attrs)>;
+using FQuantizable = std::function<QuantizeType(const NodeAttrs& attrs)>;
+
+/*!
+ * \brief Register a quantized node creation function based on the attrs of the node
+ * \note Register under "FQuantizedOp" for non-quantized operators
+ */
+using FQuantizedOp = std::function<nnvm::ObjectPtr(const NodeAttrs& attrs)>;
 
 /*!
  * \brief Register a function to determine if the output of a quantized operator
@@ -309,15 +333,55 @@ using FQuantizedOp = std::function<nnvm::NodePtr (const NodeAttrs& attrs)>;
  * taking int8 data types while accumulating in int32, e.g. quantized_conv.
  * \note Register under "FNeedRequantize" for non-quantized operators
  */
-using FNeedRequantize = std::function<bool (const NodeAttrs& attrs)>;
+using FNeedRequantize = std::function<bool(const NodeAttrs& attrs)>;
 
 /*!
  * \brief Register a function to determine if the input of a quantized operator
  * needs to be quantized. This is usually used for the quantized operators
  * which can handle fp32 inputs directly.
  */
-using FAvoidQuantizeInput = std::function<bool (const NodeAttrs& attrs,
-                                                size_t index)>;
+using FAvoidQuantizeInput = std::function<
+    bool(const NodeAttrs& attrs, const size_t index, const std::string quantize_granularity)>;
+
+/*!
+ * \brief Register a function to determine if the input of a quantized operator
+ * needs to be quantized asymmetrically.
+ */
+using FNeedAsymQuantizeInput = std::function<bool(const NodeAttrs& attrs, const size_t index)>;
+
+/*!
+ * \brief Register a function to determine if the output of a quantized operator
+ * needs to be dequantized. This is usually used for the quantized operators
+ * which can produce fp32 outputs directly.
+ */
+using FAvoidDequantizeOutput = std::function<bool(const NodeAttrs& attrs, const size_t index)>;
+
+/*!
+ * \brief Register a function to determine if the input of a quantized operator
+ * needs to be calibrated. This is usually used for the quantized operators
+ * which need calibration on its input.
+ */
+using FNeedCalibrateInput = std::function<std::vector<int>(const NodeAttrs& attrs)>;
+
+/*!
+ * \brief Register a function to determine if the output of a quantized operator
+ * needs to be calibrated. This is usually used for the quantized operators
+ * which need calibration on its output.
+ */
+using FNeedCalibrateOutput = std::function<std::vector<int>(const NodeAttrs& attrs)>;
+
+#if MXNET_USE_CUDA
+
+/*!
+ * \brief Register a function to determine if
+ * the operator implementation is compatible
+ * with CUDA graphs. This requires the execution
+ * to stay the same as long as the shape and type
+ * of input stays the same.
+ */
+using FIsCUDAGraphsCompatible = std::function<bool(const NodeAttrs& attrs, const bool is_train)>;
+
+#endif
 
 }  // namespace mxnet
 

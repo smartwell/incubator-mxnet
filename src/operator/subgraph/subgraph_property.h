@@ -20,12 +20,15 @@
 #ifndef MXNET_OPERATOR_SUBGRAPH_SUBGRAPH_PROPERTY_H_
 #define MXNET_OPERATOR_SUBGRAPH_SUBGRAPH_PROPERTY_H_
 
-#include <nnvm/node.h>
 #include <dmlc/base.h>
 #include <dmlc/thread_local.h>
+#include <mxnet/graph_attr_types.h>
+#include <mxnet/op_attr_types.h>
+#include <nnvm/node.h>
 #include <unordered_map>
 #include <vector>
 #include <string>
+#include <utility>
 
 namespace mxnet {
 namespace op {
@@ -39,7 +42,9 @@ using BiDirectedNodePtr = std::shared_ptr<BiDirectedNode>;
  * subgraphs.
  */
 struct BiDirectedNode {
-  static BiDirectedNodePtr Create() { return std::make_shared<BiDirectedNode>(); }
+  static BiDirectedNodePtr Create() {
+    return std::make_shared<BiDirectedNode>();
+  }
   BiDirectedNode() : label(-1), node(nullptr) {}
   /*! subgraph label */
   int label;
@@ -53,7 +58,13 @@ struct BiDirectedNode {
   std::unordered_map<nnvm::Node*, std::vector<size_t>> outputs;
 };  // struct BiDirectedNode
 
-/*
+struct NodeAttr {
+  DispatchMode dispatch_mode;
+  ShapeVector ishape;
+  std::vector<int> itype;
+};
+
+/*!
  * This provides criteria for the graph partitioning algorithm to select
  * nodes to subgraphs.
  * The algorithm first sorts all the nodes in topological order, and then
@@ -80,21 +91,43 @@ class SubgraphSelector {
   /*!
    * \brief Determines if to search for other nodes to form a subgraph from the seed_node.
    */
-  virtual bool Select(const nnvm::Node &seed_node) = 0;
+  virtual bool Select(const nnvm::Node& seed_node) {
+    LOG(FATAL) << "No Select is implemented.";
+    return false;
+  }
+  virtual bool Select(const nnvm::Node& seed_node, const std::shared_ptr<NodeAttr>& node_attr) {
+    return Select(seed_node);
+  }
   /*!
    * \brief Determines if to select input_node when traverse to the cur_node.
    * \param cur_node the node for determining whether its input_node should be selected
    * \param input_node the input node of the cur_node
    * \return true if input_node is selected
    */
-  virtual bool SelectInput(const nnvm::Node &cur_node, const nnvm::Node &input_node) = 0;
+  virtual bool SelectInput(const nnvm::Node& cur_node, const nnvm::Node& input_node) {
+    LOG(FATAL) << "No SelectInput is implemented.";
+    return false;
+  }
+  virtual bool SelectInput(const nnvm::Node& cur_node,
+                           const nnvm::Node& input_node,
+                           const std::shared_ptr<NodeAttr>& input_node_attr) {
+    return SelectInput(cur_node, input_node);
+  }
   /*!
    * \brief Determines if to select output_node when traverse to the cur_node.
    * \param cur_node the node for determining whether its output_node should be selected
    * \param output_node the output node of the cur_node
    * \return true if output_node is selected
    */
-  virtual bool SelectOutput(const nnvm::Node &cur_node, const nnvm::Node &output_node) = 0;
+  virtual bool SelectOutput(const nnvm::Node& cur_node, const nnvm::Node& output_node) {
+    LOG(FATAL) << "No SelectOutput is implemented.";
+    return false;
+  }
+  virtual bool SelectOutput(const nnvm::Node& cur_node,
+                            const nnvm::Node& output_node,
+                            const std::shared_ptr<NodeAttr>& output_node_attr) {
+    return SelectOutput(cur_node, output_node);
+  }
   /*!
    * \brief Post processes pre-selected subgraph nodes. Return a list of nodes that
    *        users want to keep in subgraph(s).
@@ -119,31 +152,50 @@ class SubgraphSelectorV2 {
   /*!
    * \brief Determines if to search for other nodes to form a subgraph from the seed_node.
    */
-  virtual bool Select(const BiDirectedNode& seed_node) = 0;
+  virtual bool Select(const BiDirectedNode& seed_node) {
+    LOG(FATAL) << "No Select is implemented.";
+    return false;
+  }
+  virtual bool Select(const BiDirectedNode& seed_node, const std::shared_ptr<NodeAttr>& node_attr) {
+    return Select(seed_node);
+  }
   /*!
    * \brief Determines if to select input_node when traverse to the cur_node.
    * \param cur_node the node for determining whether its input_node should be selected
    * \param input_node the input node of the cur_node
    * \return true if input_node is selected
    */
+  virtual bool SelectInput(const BiDirectedNode& cur_node, const BiDirectedNode& input_node) {
+    LOG(FATAL) << "No SelectInput is implemented.";
+    return false;
+  }
   virtual bool SelectInput(const BiDirectedNode& cur_node,
-                           const BiDirectedNode& input_node) = 0;
+                           const BiDirectedNode& input_node,
+                           const std::shared_ptr<NodeAttr>& input_node_attr) {
+    return SelectInput(cur_node, input_node);
+  }
   /*!
    * \brief Determines if to select output_node when traverse to the cur_node.
    * \param cur_node the node for determining whether its output_node should be selected
    * \param output_node the output node of the cur_node
    * \return true if output_node is selected
    */
+  virtual bool SelectOutput(const BiDirectedNode& cur_node, const BiDirectedNode& output_node) {
+    LOG(FATAL) << "No SelectOutput is implemented.";
+    return false;
+  }
   virtual bool SelectOutput(const BiDirectedNode& cur_node,
-                            const BiDirectedNode& output_node) = 0;
+                            const BiDirectedNode& output_node,
+                            const std::shared_ptr<NodeAttr>& output_node_attr) {
+    return SelectOutput(cur_node, output_node);
+  }
   /*!
    * \brief Post processes pre-selected subgraph nodes. Return a list of nodes that
    *        users want to keep in subgraph(s).
-   * \param candidates re-selected subgraph nodes to filt
+   * \param candidates re-selected subgraph nodes to filter
    * \return a list of nodes to keep
    */
-  virtual std::vector<BiDirectedNode*> Filter(
-      const std::vector<BiDirectedNode*>& candidates) {
+  virtual std::vector<BiDirectedNode*> Filter(const std::vector<BiDirectedNode*>& candidates) {
     return candidates;
   }
 
@@ -162,22 +214,24 @@ class SubgraphSelectorV2Bridge : public SubgraphSelectorV2 {
 
   virtual ~SubgraphSelectorV2Bridge() {}
 
-  bool Select(const BiDirectedNode& seed_node) override {
-    return ss_ptr_->Select(*seed_node.node);
+  bool Select(const BiDirectedNode& seed_node,
+              const std::shared_ptr<NodeAttr>& node_attr) override {
+    return ss_ptr_->Select(*seed_node.node, node_attr);
   }
 
   bool SelectInput(const BiDirectedNode& cur_node,
-                   const BiDirectedNode& input_node) override {
-    return ss_ptr_->SelectInput(*cur_node.node, *input_node.node);
+                   const BiDirectedNode& input_node,
+                   const std::shared_ptr<NodeAttr>& node_attr) override {
+    return ss_ptr_->SelectInput(*cur_node.node, *input_node.node, node_attr);
   }
 
   bool SelectOutput(const BiDirectedNode& cur_node,
-                    const BiDirectedNode& output_node) override {
-    return ss_ptr_->SelectOutput(*cur_node.node, *output_node.node);
+                    const BiDirectedNode& output_node,
+                    const std::shared_ptr<NodeAttr>& node_attr) override {
+    return ss_ptr_->SelectOutput(*cur_node.node, *output_node.node, node_attr);
   }
 
-  std::vector<BiDirectedNode*> Filter(
-      const std::vector<BiDirectedNode*>& candidates) override {
+  std::vector<BiDirectedNode*> Filter(const std::vector<BiDirectedNode*>& candidates) override {
     std::unordered_map<nnvm::Node*, BiDirectedNode*> node_2_snode_map;
     std::vector<nnvm::Node*> n_candidates;
     for (auto i : candidates) {
@@ -186,13 +240,18 @@ class SubgraphSelectorV2Bridge : public SubgraphSelectorV2 {
     }
     auto n_ret = ss_ptr_->Filter(n_candidates);
     std::vector<BiDirectedNode*> ret;
-    for (auto i : n_ret) ret.push_back(node_2_snode_map[i]);
+    for (auto i : n_ret)
+      ret.push_back(node_2_snode_map[i]);
     return ret;
   }
 
-  void Reset() override { ss_ptr_->Reset(); }
+  void Reset() override {
+    ss_ptr_->Reset();
+  }
 
-  const SubgraphSelectorPtr& GetV1ptr() const { return ss_ptr_; }
+  const SubgraphSelectorPtr& GetV1ptr() const {
+    return ss_ptr_;
+  }
 
  private:
   SubgraphSelectorPtr ss_ptr_;
@@ -205,13 +264,14 @@ class SubgraphSelectorV2Bridge : public SubgraphSelectorV2 {
  */
 class SubgraphProperty {
  public:
+  virtual ~SubgraphProperty() {}
   /*! \brief Property type */
   enum SgPropertyType {
     kCreate,
     kAdjust,
   };
 
-  explicit SubgraphProperty(SgPropertyType type = kCreate) : type_(type) {}
+  explicit SubgraphProperty(SgPropertyType type = kCreate) : type_(type), dedup_subgraph(true) {}
 
   /*!
    * \brief The criteria of selecting the subgraph nodes.
@@ -220,6 +280,18 @@ class SubgraphProperty {
     LOG(FATAL) << "No CreateSubgraphSelector is implemented for this SubgraphProperty.";
     return nullptr;
   }
+
+  virtual void PrePartition(const nnvm::Graph& g,
+                            const std::unordered_map<std::string, std::string>& options_map) {
+    if (options_map.count("dedup_subgraph") > 0 &&
+        options_map.at("dedup_subgraph").compare("True") == 0) {
+      dedup_subgraph = true;
+    } else {
+      dedup_subgraph = false;
+    }
+  }
+
+  virtual void PostPartition(const nnvm::Graph& g) {}
 
   virtual SubgraphSelectorV2Ptr CreateSubgraphSelectorV2() const {
     auto v1_ptr = CreateSubgraphSelector();
@@ -232,8 +304,8 @@ class SubgraphProperty {
    * \param sym the symbol to create subgraph node
    * \param subgraph_id subgraph id
    */
-  virtual nnvm::NodePtr CreateSubgraphNode(const nnvm::Symbol& sym,
-                                           const int subgraph_id = 0) const {
+  virtual nnvm::ObjectPtr CreateSubgraphNode(const nnvm::Symbol& sym,
+                                             const int subgraph_id = 0) const {
     CHECK_EQ(GetPropertyType(), kCreate);
     LOG(FATAL) << "Not implement CreateSubgraphNode() for this subgraph property.";
     return nullptr;
@@ -246,9 +318,9 @@ class SubgraphProperty {
    * \param subgraph_selector the selector used for creating this subgraph
    * \param subgraph_id subgraph id
    */
-  virtual nnvm::NodePtr CreateSubgraphNode(const nnvm::Symbol& sym,
-                                           const SubgraphSelectorPtr& subgraph_selector,
-                                           const int subgraph_id = 0) const {
+  virtual nnvm::ObjectPtr CreateSubgraphNode(const nnvm::Symbol& sym,
+                                             const SubgraphSelectorPtr& subgraph_selector,
+                                             const int subgraph_id = 0) const {
     return CreateSubgraphNode(sym, subgraph_id);
   }
 
@@ -259,9 +331,9 @@ class SubgraphProperty {
    * \param subgraph_selector The selector used for selecting this node set
    * \param subgraph_id subgraph id
    */
-  virtual nnvm::NodePtr CreateSubgraphNode(const nnvm::Symbol& sym,
-                                           const SubgraphSelectorV2Ptr& subgraph_selector,
-                                           const int subgraph_id = 0) const {
+  virtual nnvm::ObjectPtr CreateSubgraphNode(const nnvm::Symbol& sym,
+                                             const SubgraphSelectorV2Ptr& subgraph_selector,
+                                             const int subgraph_id = 0) const {
     CHECK_EQ(GetPropertyType(), kCreate);
     const auto bridge = static_cast<SubgraphSelectorV2Bridge*>(subgraph_selector.get());
     return CreateSubgraphNode(sym, bridge->GetV1ptr(), subgraph_id);
@@ -276,7 +348,7 @@ class SubgraphProperty {
    * \param subgraph_id subgraph id
    */
   virtual void AdjustSubgraphNode(const std::vector<nnvm::Node*>& subgraph_nodes,
-                                  const SubgraphSelectorV2Ptr &subgraph_selector,
+                                  const SubgraphSelectorV2Ptr& subgraph_selector,
                                   const int subgraph_id = 0) const {
     CHECK_EQ(GetPropertyType(), kAdjust);
     LOG(FATAL) << "Not implement AdjustSubgraphNode() for this subgraph property.";
@@ -288,12 +360,27 @@ class SubgraphProperty {
    * \param subgraph_node the subgraph node to connect output
    * \param output_entries external output entries depending on this subgraph node
    */
-  virtual void ConnectSubgraphOutputs(const nnvm::NodePtr subgraph_node,
+  virtual void ConnectSubgraphOutputs(const nnvm::ObjectPtr subgraph_node,
                                       std::vector<nnvm::NodeEntry*>* output_entries) const {
+    // Collapse output_entries pointing to same NodeEntry
+    // Outputs are ordered, duplicates are neighbors
+    nnvm::NodeEntryEqual node_equal;
+    nnvm::NodeEntry prevNodeEntry;
+    uint32_t idx = 0;
     for (size_t i = 0; i < output_entries->size(); ++i) {
-      *output_entries->at(i) = nnvm::NodeEntry{subgraph_node, static_cast<uint32_t>(i), 0};
+      if (dedup_subgraph) {
+        // increment the output idx for each unique output of the subgraph
+        if (i != 0 && !node_equal(prevNodeEntry, *output_entries->at(i)))
+          idx++;
+        prevNodeEntry = *output_entries->at(i);  // make a copy so we can compare before modifying
+        // change output entry to point to subgraph instead of original node
+        *output_entries->at(i) = nnvm::NodeEntry{subgraph_node, idx, 0};
+      } else {
+        *output_entries->at(i) = nnvm::NodeEntry{subgraph_node, static_cast<uint32_t>(i), 0};
+      }
     }
   }
+
   /*!
    * \brief Connect subgraph internal input with external input entries.
    * By default, each input entry will connect in top sorted order.
@@ -301,15 +388,23 @@ class SubgraphProperty {
    * \param input_entries input entries inside subgraph
    * \param orig_input_entries input entries outside subgraph
    */
-  virtual void ConnectSubgraphInputs(const nnvm::NodePtr subgraph_node,
+  virtual void ConnectSubgraphInputs(const nnvm::ObjectPtr subgraph_node,
                                      std::vector<nnvm::NodeEntry*>* input_entries,
                                      std::vector<nnvm::NodeEntry>* orig_input_entries) const {
     subgraph_node->inputs = *orig_input_entries;
   }
   /*!
+   * \brief Initialize subgraph internal inputs with external input entries.
+   * Called before CreateSubgraphNode, optional
+   * \param input_entries input entries inside subgraph
+   * \param orig_input_entries input entries outside subgraph
+   */
+  virtual void InitSubgraphInputs(std::vector<nnvm::NodeEntry*>* input_entries,
+                                  std::vector<nnvm::NodeEntry>* orig_input_entries) const {}
+  /*!
    * \brief Set an attr with name in the attr map.
    */
-  template<typename T>
+  template <typename T>
   SubgraphProperty& SetAttr(const std::string& name, const T& value) {
     attrs_[name] = std::make_shared<dmlc::any>(value);
     return *this;
@@ -317,7 +412,7 @@ class SubgraphProperty {
   /*!
    * \brief Get the attr with the name.
    */
-  template<typename T>
+  template <typename T>
   const T& GetAttr(const std::string& name) const {
     auto it = attrs_.find(name);
     CHECK(it != attrs_.end()) << "Cannot find attribute " << name << " in SubgraphProperty";
@@ -342,11 +437,14 @@ class SubgraphProperty {
   /*!
    * \brief Get the property type.
    */
-  SgPropertyType GetPropertyType() const { return type_; }
+  SgPropertyType GetPropertyType() const {
+    return type_;
+  }
 
  protected:
   SgPropertyType type_;
   std::unordered_map<std::string, std::shared_ptr<nnvm::any>> attrs_;
+  bool dedup_subgraph;
 };
 
 using SubgraphPropertyPtr = std::shared_ptr<SubgraphProperty>;
@@ -355,9 +453,10 @@ class SubgraphPropertyEntry {
  public:
   explicit SubgraphPropertyEntry(std::shared_ptr<SubgraphProperty> entry) : entry_(entry) {}
 
-  template<typename T>
+  template <typename T>
   SubgraphPropertyEntry set_attr(const std::string& name, const T value) const {
-    entry_->SetAttr<T>(name, value);
+    if (entry_)
+      entry_->SetAttr<T>(name, value);
     return *this;
   }
 
@@ -371,7 +470,7 @@ class SubgraphBackend {
   /*!
    * \brief Set an attr with name in the attr map.
    */
-  template<typename T>
+  template <typename T>
   SubgraphBackend& SetAttr(const std::string& name, const T& value) {
     attrs_[name] = std::make_shared<dmlc::any>(value);
     return *this;
@@ -379,7 +478,7 @@ class SubgraphBackend {
   /*!
    * \brief Get the attr with the name.
    */
-  template<typename T>
+  template <typename T>
   const T& GetAttr(const std::string& name) const {
     auto it = attrs_.find(name);
     CHECK(it != attrs_.end()) << "Cannot find attribute " << name << " in SubgraphProperty";
@@ -403,14 +502,21 @@ class SubgraphBackend {
     }
   }
 
-  SubgraphPropertyPtr& RegisterSubgraphProperty(const SubgraphPropertyPtr prop) {
-    prop_ptr_.push_back(prop);
-    return prop_ptr_.back();
+  SubgraphPropertyPtr RegisterSubgraphProperty(SubgraphPropertyPtr prop) {
+    if (prop) {
+      prop_ptr_.push_back(prop);
+      return prop_ptr_.back();
+    }
+    return prop;
   }
 
-  const std::string& GetName() const { return name_; }
+  const std::string& GetName() const {
+    return name_;
+  }
 
-  const std::vector<SubgraphPropertyPtr>& GetSubgraphProperties() const { return prop_ptr_; }
+  const std::vector<SubgraphPropertyPtr>& GetSubgraphProperties() const {
+    return prop_ptr_;
+  }
 
  private:
   const std::string name_;
@@ -424,7 +530,7 @@ class SubgraphBackendEntry {
  public:
   explicit SubgraphBackendEntry(SubgraphBackendPtr entry) : entry_(entry) {}
 
-  template<typename T>
+  template <typename T>
   SubgraphBackendEntry set_attr(const std::string& name, const T value) const {
     entry_->SetAttr<T>(name, value);
     return *this;
@@ -445,8 +551,8 @@ class SubgraphBackendRegistry {
 
   SubgraphBackendPtr& GetSubgraphBackend(const std::string& name) {
     auto it = backend_map_.find(name);
-    CHECK(it != backend_map_.end()) << "SubgraphProperty " << name
-                                    << " is not found in SubgraphBackendRegistry";
+    CHECK(it != backend_map_.end())
+        << "SubgraphProperty " << name << " is not found in SubgraphBackendRegistry";
     return it->second;
   }
 
@@ -466,19 +572,30 @@ class SubgraphBackendRegistry {
     return SubgraphPropertyEntry(prop);
   }
 
-  SubgraphBackendRegistry() = default;
+  SubgraphPropertyEntry __REGISTER_CUSTOM_PROPERTY__(const std::string& name,
+                                                     SubgraphPropertyPtr cprop) {
+    auto it = backend_map_.find(name);
+    CHECK(it != backend_map_.end())
+        << "Subgraph backend " << name << " is not found in SubgraphBackendRegistry";
+    auto prop = it->second->RegisterSubgraphProperty(cprop);
+    return SubgraphPropertyEntry(prop);
+  }
+
+  SubgraphBackendRegistry()                               = default;
   SubgraphBackendRegistry(const SubgraphBackendRegistry&) = delete;
-  SubgraphBackendRegistry(SubgraphBackendRegistry&&) = delete;
+  SubgraphBackendRegistry(SubgraphBackendRegistry&&)      = delete;
   SubgraphBackendRegistry& operator=(const SubgraphBackendRegistry&) = delete;
   std::unordered_map<std::string, SubgraphBackendPtr> backend_map_;
 };
 
-// This op name set is for setting the names of operators that should be grouped into
-// subgraphs. In practice, every backend accelerator should have a predefined name set.
-// This set is only used for the testing purpose.
-// key: property name, value: op name set
+/*!
+ * This op name set is for setting the names of operators that should be grouped into
+ * subgraphs. In practice, every backend accelerator should have a predefined name set.
+ * This set is only used for the testing purpose.
+ * key: property name, value: op name set
+ */
 typedef dmlc::ThreadLocalStore<std::unordered_map<std::string, std::unordered_set<std::string>>>
-  SubgraphPropertyOpNameSet;
+    SubgraphPropertyOpNameSet;
 
 #define DECLARE_PROPERTY_EX(NAME, SubgraphPropertyType, X) \
   static const DMLC_ATTRIBUTE_UNUSED auto __make_##SubgraphPropertyType##_##Name##_##X##__
@@ -489,8 +606,7 @@ typedef dmlc::ThreadLocalStore<std::unordered_map<std::string, std::unordered_se
   DECLARE_PROPERTY(Name, SubgraphPropertyType, __LINE__) =           \
       SubgraphBackendRegistry::Get()->__REGISTER_PROPERTY__(#Name, &SubgraphPropertyType::Create)
 
-#define DECLARE_BACKEND(Name) \
-  static const DMLC_ATTRIBUTE_UNUSED auto __make_##Name##__
+#define DECLARE_BACKEND(Name) static const DMLC_ATTRIBUTE_UNUSED auto __make_##Name##__
 
 #define MXNET_REGISTER_SUBGRAPH_BACKEND(Name) \
   DECLARE_BACKEND(Name) = SubgraphBackendRegistry::Get()->__REGISTER_BACKEND__(#Name)

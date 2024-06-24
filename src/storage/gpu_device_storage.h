@@ -18,20 +18,14 @@
  */
 
 /*!
- * Copyright (c) 2015 by Contributors
  * \file gpu_device_storage.h
  * \brief GPU storage implementation.
  */
 #ifndef MXNET_STORAGE_GPU_DEVICE_STORAGE_H_
 #define MXNET_STORAGE_GPU_DEVICE_STORAGE_H_
 
-#include "mxnet/base.h"
-#include "mxnet/storage.h"
-#include "../common/cuda_utils.h"
 #if MXNET_USE_CUDA
-#include <cuda_runtime.h>
-#endif  // MXNET_USE_CUDA
-#include <new>
+#include "mxnet/storage.h"
 
 namespace mxnet {
 namespace storage {
@@ -44,8 +38,9 @@ class GPUDeviceStorage {
   /*!
    * \brief Allocation.
    * \param handle Handle struct.
+   * \param failsafe Return a handle with a null dptr if out of memory, rather than exit.
    */
-  inline static void Alloc(Storage::Handle* handle);
+  inline static void Alloc(Storage::Handle* handle, bool failsafe = false);
   /*!
    * \brief Deallocation.
    * \param handle Handle struct.
@@ -53,42 +48,41 @@ class GPUDeviceStorage {
   inline static void Free(Storage::Handle handle);
 };  // class GPUDeviceStorage
 
-inline void GPUDeviceStorage::Alloc(Storage::Handle* handle) {
-  handle->dptr = nullptr;
-  const size_t size = handle->size;
-  if (size == 0) return;
-
-#if MXNET_USE_CUDA
+inline void GPUDeviceStorage::Alloc(Storage::Handle* handle, bool failsafe) {
   mxnet::common::cuda::DeviceStore device_store(handle->ctx.real_dev_id(), true);
 #if MXNET_USE_NCCL
   std::lock_guard<std::mutex> l(Storage::Get()->GetMutex(Context::kGPU));
 #endif  // MXNET_USE_NCCL
-  cudaError_t e = cudaMalloc(&handle->dptr, size);
-  if (e != cudaSuccess && e != cudaErrorCudartUnloading)
-    LOG(FATAL) << "CUDA: " << cudaGetErrorString(e);
-#else   // MXNET_USE_CUDA
-  LOG(FATAL) << "Please compile with CUDA enabled";
-#endif  // MXNET_USE_CUDA
+  cudaError_t err = cudaMalloc(&handle->dptr, handle->size);
+  if (failsafe && err == cudaErrorMemoryAllocation) {
+    // Clear sticky cuda mem alloc error
+    cudaGetLastError();
+    handle->dptr = nullptr;
+  } else {
+    CUDA_CALL(err);
+    profiler::GpuDeviceStorageProfiler::Get()->OnAlloc(*handle, handle->size, false);
+  }
 }
 
 inline void GPUDeviceStorage::Free(Storage::Handle handle) {
-#if MXNET_USE_CUDA
   mxnet::common::cuda::DeviceStore device_store(handle.ctx.real_dev_id(), true);
 #if MXNET_USE_NCCL
   std::lock_guard<std::mutex> l(Storage::Get()->GetMutex(Context::kGPU));
 #endif  // MXNET_USE_NCCL
-  // throw special exception for caller to catch.
-  cudaError_t err = cudaFree(handle.dptr);
-  // ignore unloading error, as memory has already been recycled
-  if (err != cudaSuccess && err != cudaErrorCudartUnloading) {
-    LOG(FATAL) << "CUDA: " << cudaGetErrorString(err);
+#if MXNET_USE_CUDA
+  for (auto ev : handle.sync_obj.events) {
+    auto valid_ev = ev.lock();
+    if (valid_ev) {
+      MSHADOW_CUDA_CALL(cudaEventSynchronize(*valid_ev));
+    }
   }
-#else   // MXNET_USE_CUDA
-  LOG(FATAL) << "Please compile with CUDA enabled";
-#endif  // MXNET_USE_CUDA
+#endif
+  CUDA_CALL(cudaFree(handle.dptr))
+  profiler::GpuDeviceStorageProfiler::Get()->OnFree(handle);
 }
 
 }  // namespace storage
 }  // namespace mxnet
 
+#endif  // MXNET_USE_CUDA
 #endif  // MXNET_STORAGE_GPU_DEVICE_STORAGE_H_

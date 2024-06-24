@@ -18,8 +18,9 @@
 # coding: utf-8
 # pylint: disable=
 """Parallelization utility optimizer."""
+
 __all__ = ['split_data', 'split_and_load', 'clip_global_norm',
-           'check_sha1', 'download']
+           'check_sha1', 'download', 'replace_file']
 
 import os
 import sys
@@ -28,17 +29,13 @@ import uuid
 import warnings
 import collections
 import weakref
-try:
-    import requests
-except ImportError:
-    class requests_failed_to_import(object):
-        pass
-    requests = requests_failed_to_import
+import requests
 
 import numpy as np
 
 from .. import ndarray
-from ..util import is_np_shape
+from ..util import is_np_shape, is_np_array, TemporaryDirectory
+from .. import numpy as _mx_np  # pylint: disable=reimported
 
 
 def split_data(data, num_slice, batch_axis=0, even_split=True):
@@ -67,28 +64,22 @@ def split_data(data, num_slice, batch_axis=0, even_split=True):
     size = data.shape[batch_axis]
     if even_split and size % num_slice != 0:
         raise ValueError(
-            "data with shape %s cannot be evenly split into %d slices along axis %d. " \
-            "Use a batch size that's multiple of %d or set even_split=False to allow " \
-            "uneven partitioning of data."%(
-                str(data.shape), num_slice, batch_axis, num_slice))
+            f"data with shape {str(data.shape)} cannot be evenly split into {num_slice} slices " \
+            f"along axis {batch_axis}. Use a batch size that's multiple of {num_slice} " \
+            f"or set even_split=False to allow uneven partitioning of data.")
 
-    step = size // num_slice
-
-    # If size < num_slice, make fewer slices
-    if not even_split and size < num_slice:
-        step = 1
-        num_slice = size
-
-    if batch_axis == 0:
-        slices = [data[i*step:(i+1)*step] if i < num_slice - 1 else data[i*step:size]
-                  for i in range(num_slice)]
-    elif even_split:
-        slices = ndarray.split(data, num_outputs=num_slice, axis=batch_axis)
+    n_each_section, extras = divmod(size, num_slice)
+    section_sizes = [0] + (extras * [n_each_section + 1] +
+                           (num_slice - extras) * [n_each_section])
+    div_points = np.array(section_sizes).cumsum()
+    if is_np_array():
+        slices = _mx_np.split(data, indices_or_sections=list(div_points[1: -1]), axis=batch_axis)
     else:
-        slices = [ndarray.slice_axis(data, batch_axis, i*step, (i+1)*step)
-                  if i < num_slice - 1 else
-                  ndarray.slice_axis(data, batch_axis, i*step, size)
-                  for i in range(num_slice)]
+        slices = []
+        for i in range(num_slice):
+            st = div_points[i]
+            end = div_points[i + 1]
+            slices.append(ndarray.slice_axis(data, axis=batch_axis, begin=st, end=end))
     return slices
 
 
@@ -98,7 +89,7 @@ def split_and_load(data, ctx_list, batch_axis=0, even_split=True):
 
     Parameters
     ----------
-    data : NDArray
+    data : NDArray or ndarray
         A batch of data.
     ctx_list : list of Context
         A list of Contexts.
@@ -109,11 +100,12 @@ def split_and_load(data, ctx_list, batch_axis=0, even_split=True):
 
     Returns
     -------
-    list of NDArrays
+    list of NDArrays or ndarrays
         Each corresponds to a context in `ctx_list`.
     """
+    array_fn = _mx_np.array if is_np_array() else ndarray.array
     if not isinstance(data, ndarray.NDArray):
-        data = ndarray.array(data, ctx=ctx_list[0])
+        data = array_fn(data, ctx=ctx_list[0])
     if len(ctx_list) == 1:
         return [data.as_in_context(ctx_list[0])]
 
@@ -139,26 +131,37 @@ def clip_global_norm(arrays, max_norm, check_isfinite=True):
       False. Otherwise a float is returned.
 
     """
-    def _norm(array):
-        if array.stype == 'default':
-            x = array.reshape((-1,))
-            return ndarray.dot(x, x)
-        return array.norm().square()
-    assert len(arrays) > 0
-    ctx = arrays[0].context
-    total_norm = ndarray.add_n(*[_norm(arr).as_in_context(ctx) for arr in arrays])
-    total_norm = ndarray.sqrt(total_norm)
+    # group arrays by ctx
+    def group_by_ctx(arr_list):
+        groups = collections.defaultdict(list)
+        for arr in arr_list:
+            ctx = arr.device
+            groups[ctx].append(arr)
+        return groups
+    def multi_sum_sq(*args, ctx=None):
+        sum = _mx_np.array([0], device=ctx)
+        for arg in args:
+            sum += _mx_np.square(arg).sum().item()
+        return sum
+    arrays_groups = group_by_ctx(arrays)
+    all_ctx_sum = _mx_np.array([0])
+    ctx = arrays[0].device
+    for group in arrays_groups:
+        sum_sq = multi_sum_sq(*arrays_groups[group], ctx=ctx)
+        all_ctx_sum += sum_sq
+    # global reduce
+    total_norm = _mx_np.sqrt(all_ctx_sum)
     if check_isfinite:
-        if not np.isfinite(total_norm.asscalar()):
+        if not np.isfinite(total_norm.item()):
             warnings.warn(
                 UserWarning('nan or inf is detected. '
                             'Clipping results will be undefined.'), stacklevel=2)
     scale = max_norm / (total_norm + 1e-8)
-    scale = ndarray.min(ndarray.concat(scale, ndarray.ones(1, ctx=ctx), dim=0))
+    scale = _mx_np.min(_mx_np.concatenate([scale, _mx_np.ones(1, device=ctx)], axis=0))
     for arr in arrays:
-        arr *= scale.as_in_context(arr.context)
+        arr *= scale.item()
     if check_isfinite:
-        return total_norm.asscalar()
+        return total_norm.item()
     else:
         return total_norm
 
@@ -203,8 +206,14 @@ def check_sha1(filename, sha1_hash):
 
 if not sys.platform.startswith('win32'):
     # refer to https://github.com/untitaker/python-atomicwrites
-    def _replace_atomic(src, dst):
-        """Implement atomic os.replace with linux and OSX. Internal use only"""
+    def replace_file(src, dst):
+        """Implement atomic os.replace with linux and OSX.
+
+        Parameters
+        ----------
+        src : source file path
+        dst : destination file path
+        """
         try:
             os.rename(src, dst)
         except OSError:
@@ -226,11 +235,9 @@ else:
     _MOVEFILE_WRITE_THROUGH = 0x8
     _windows_default_flags = _MOVEFILE_WRITE_THROUGH
 
-    text_type = unicode if sys.version_info[0] == 2 else str  # pylint: disable=undefined-variable
-
     def _str_to_unicode(x):
         """Handle text decoding. Internal use only"""
-        if not isinstance(x, text_type):
+        if not isinstance(x, str):
             return x.decode(sys.getfilesystemencoding())
         return x
 
@@ -246,11 +253,17 @@ else:
             finally:
                 raise OSError(msg)
 
-    def _replace_atomic(src, dst):
+    def replace_file(src, dst):
         """Implement atomic os.replace with windows.
+
         refer to https://docs.microsoft.com/en-us/windows/desktop/api/winbase/nf-winbase-movefileexw
         The function fails when one of the process(copy, flush, delete) fails.
-        Internal use only"""
+
+        Parameters
+        ----------
+        src : source file path
+        dst : destination file path
+        """
         _handle_errors(ctypes.windll.kernel32.MoveFileExW(
             _str_to_unicode(src), _str_to_unicode(dst),
             _windows_default_flags | _MOVEFILE_REPLACE_EXISTING
@@ -258,7 +271,7 @@ else:
 
 
 def download(url, path=None, overwrite=False, sha1_hash=None, retries=5, verify_ssl=True):
-    """Download an given URL
+    """Download a given URL
 
     Parameters
     ----------
@@ -304,7 +317,7 @@ def download(url, path=None, overwrite=False, sha1_hash=None, retries=5, verify_
     if overwrite or not os.path.exists(fname) or (sha1_hash and not check_sha1(fname, sha1_hash)):
         dirname = os.path.dirname(os.path.abspath(os.path.expanduser(fname)))
         if not os.path.exists(dirname):
-            os.makedirs(dirname)
+            os.makedirs(dirname, exist_ok=True)
         while retries + 1 > 0:
             # Disable pyling too broad Exception
             # pylint: disable=W0703
@@ -324,7 +337,7 @@ def download(url, path=None, overwrite=False, sha1_hash=None, retries=5, verify_
                 # delete the temporary file
                 if not os.path.exists(fname) or (sha1_hash and not check_sha1(fname, sha1_hash)):
                     # atmoic operation in the same file system
-                    _replace_atomic('{}.{}'.format(fname, random_uuid), fname)
+                    replace_file('{}.{}'.format(fname, random_uuid), fname)
                 else:
                     try:
                         os.remove('{}.{}'.format(fname, random_uuid))
@@ -378,7 +391,7 @@ def _brief_print_list(lst, limit=7):
     if len(lst) > limit:
         return _brief_print_list(lst[:limit//2], limit) + ', ..., ' + \
             _brief_print_list(lst[-limit//2:], limit)
-    return ', '.join(["'%s'"%str(i) for i in lst])
+    return ', '.join([f"'{str(i)}'" for i in lst])
 
 
 class HookHandle(object):
@@ -473,3 +486,96 @@ def _check_all_np_ndarrays(out):
         for i in out:
             _check_all_np_ndarrays(i)
     # pylint: enable=no-else-raise
+
+
+def _check_block_input_np_ndarrays(inputs):
+    """Check if block's inputs are numpy ndarrays."""
+    from ..numpy import ndarray as np_ndarray
+    from ..symbol import Symbol as nd_symbol
+    from ..ndarray import NDArray as nd_ndarray
+
+    # pylint: disable=no-else-raise
+    if isinstance(inputs, (nd_ndarray, nd_symbol)) and not isinstance(inputs, (np_ndarray)):
+        raise TypeError("Block's inputs must be of type `mxnet.numpy.ndarray`, "
+                        "while got output type {}"
+                        .format(str(type(inputs))))
+    elif isinstance(inputs, (list, tuple)):
+        for i in inputs:
+            _check_block_input_np_ndarrays(i)
+    # pylint: enable=no-else-raise
+
+
+# pylint: disable=too-many-nested-blocks
+def split_rnn_params(param, mode, num_layers, input_size, hidden_size, bidirectional=False, projection_size=None):
+    """Split rnn layer parameter into weight and bias in different layer.
+
+    Parameters
+    ----------
+    param : ndarray
+        The parameter of rnn layer.
+    mode : str
+        Mode of rnn. Supported modes: rnn_relu, rnn_tanh, lstm, gru
+    num_layers : int, default 1
+        Number of recurrent layers.
+    input_size: int, default 0
+        The number of expected features in the input x.
+        If not specified, it will be inferred from input.
+    hidden_size: int
+        The number of features in the hidden state h.
+    bidirectional: bool, default False
+        If `True`, becomes a bidirectional RNN.
+    projection_size: int, default None
+        The number of features after projection.
+    """
+    gates = {'rnn_relu': 1, 'rnn_tanh': 1, 'lstm': 4, 'gru': 3}[mode]
+    dir = 2 if bidirectional else 1
+    param_dict = {}
+    begin = 0
+    if not projection_size:
+        for p in ['weight', 'bias']:
+            for l in range(num_layers):
+                for d in ['l', 'r'][:dir]:
+                    for g in ['i2h', 'h2h']:
+                        ni = input_size
+                        if l != 0:
+                            ni = hidden_size * dir
+                        if g == 'h2h':
+                            ni = hidden_size
+                        shape0 = gates * hidden_size
+                        if p == 'weight':
+                            cur_len = shape0 * ni
+                            param_dict['{}{}_{}_{}'.format(d, l, g, p)] = \
+                                param[begin:begin+cur_len].reshape(shape0, ni)
+                        else:
+                            cur_len = shape0
+                            param_dict['{}{}_{}_{}'.format(d, l, g, p)] = \
+                                param[begin:begin+cur_len].reshape(shape0,)
+                        begin += cur_len
+    else:
+        for p in ['weight', 'bias']:
+            for l in range(num_layers):
+                for d in ['l', 'r'][:dir]:
+                    for g in ['i2h', 'h2h', 'h2r']:
+                        if g != 'h2r' or p != 'bias':
+                            if g == 'h2r':
+                                cur_len = projection_size * hidden_size
+                                param_dict['{}{}_{}_{}'.format(d, l, g, p)] = \
+                                    param[begin:begin+cur_len]. \
+                                        reshape(projection_size, hidden_size)
+                            else:
+                                ni = input_size
+                                if l != 0:
+                                    ni = projection_size * dir
+                                if g == 'h2h':
+                                    ni = projection_size
+                                shape0 = gates * hidden_size
+                                if p == 'weight':
+                                    cur_len = shape0 * ni
+                                    param_dict['{}{}_{}_{}'.format(d, l, g, p)] = \
+                                        param[begin:begin+cur_len].reshape(shape0, ni)
+                                else:
+                                    cur_len = shape0
+                                    param_dict['{}{}_{}_{}'.format(d, l, g, p)] = \
+                                        param[begin:begin+cur_len].reshape(shape0,)
+                            begin += cur_len
+    return param_dict

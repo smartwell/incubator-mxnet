@@ -20,22 +20,15 @@ from __future__ import print_function
 import numpy as np
 import mxnet as mx
 import copy
-import math
-import ctypes
-import random
-import itertools
-from numpy.testing import assert_allclose, assert_array_equal
 from mxnet.test_utils import *
-from mxnet.base import py_str, MXNetError, _as_list, SymbolHandle, check_call, _LIB, c_handle_array, mx_uint
-from common import setup_module, with_seed, teardown
-import unittest
+import pytest
 from mxnet.gluon.model_zoo.vision import get_model
 
 def make_subgraph(subg, *args):
     js = subg.tojson()
-    return mx.sym._internal._CachedOp(*args, subgraph=js)
+    return subg
 
-@with_seed()
+@pytest.mark.serial
 def test_make_subgraph():
     def make_subgraph1(stype):
         a = mx.symbol.Variable(name='a', stype=stype)
@@ -50,9 +43,9 @@ def test_make_subgraph():
 
         s = (10, 10)
         a_arr = mx.nd.array(np.random.normal(-0.1, 0.1, size=s),
-                ctx=default_context()).tostype(stype)
+                ctx=default_device()).tostype(stype)
         b_arr = mx.nd.array(np.random.normal(-0.1, 0.1, size=s),
-                ctx=default_context()).tostype(stype)
+                ctx=default_device()).tostype(stype)
         return (d, y, {'a': a_arr, 'b': b_arr}, {})
 
     def create_weights(shapes, names):
@@ -61,7 +54,7 @@ def test_make_subgraph():
         assert len(shapes) == len(names)
         for i in range(len(shapes)):
             sym_dict[names[i]] = mx.symbol.Variable(names[i])
-            nd_dict[names[i]] = mx.nd.array(np.ones(shapes[i]), ctx=default_context())
+            nd_dict[names[i]] = mx.nd.array(np.ones(shapes[i]), ctx=default_device())
         return (nd_dict, sym_dict)
 
     def make_subgraph_weight(orig, shape, stype):
@@ -80,7 +73,7 @@ def test_make_subgraph():
             input_list.append(input_dict[name])
         subg = make_subgraph(orig, *input_list)
 
-        arr = mx.nd.random.uniform(-1, 1, shape=shape, ctx=default_context()).tostype(stype)
+        arr = mx.nd.random.uniform(-1, 1, shape=shape, ctx=default_device()).tostype(stype)
         arg_dict = weight_dict
         arg_dict['data'] = arr
         return (orig, subg, arg_dict, aux_dict)
@@ -107,7 +100,7 @@ def test_make_subgraph():
         model.hybridize()
         model.initialize()
         s = (1, 3, 32, 32)
-        data = mx.nd.random.normal(shape=s)
+        data = mx.np.random.normal(size=s)
         out = model(data)
         model.export('resnet18')
         orig = mx.sym.load('resnet18-symbol.json')
@@ -124,10 +117,10 @@ def test_make_subgraph():
             all_inputs = copy.deepcopy(inputs)
             all_inputs.update(aux_states)
             args_grad = {key : mx.nd.empty(shape=all_inputs[key].shape) for key in all_inputs.keys()}
-            e1 = orig.bind(ctx=default_context(), args=all_inputs, args_grad=args_grad,
+            e1 = orig._bind(ctx=default_device(), args=all_inputs, args_grad=args_grad,
                     aux_states=all_inputs)
             args_grad = {key : mx.nd.empty(shape=all_inputs[key].shape) for key in all_inputs.keys()}
-            e2 = subg.bind(ctx=default_context(), args=all_inputs, args_grad=args_grad,
+            e2 = subg._bind(ctx=default_device(), args=all_inputs, args_grad=args_grad,
                     aux_states=all_inputs)
             e1.forward(is_train=True)
             e2.forward(is_train=True)
@@ -135,7 +128,7 @@ def test_make_subgraph():
                 assert_almost_equal(e1.outputs[i].asnumpy(), e2.outputs[i].asnumpy(),
                         rtol=0.001, atol=0.0001)
 
-            out_grads = [mx.nd.random.uniform(-1, 1, shape=out.shape, ctx=default_context())
+            out_grads = [mx.nd.random.uniform(-1, 1, shape=out.shape, ctx=default_device())
                     for out in e1.outputs]
             e1.backward(out_grads)
             e2.backward(out_grads)
@@ -144,6 +137,7 @@ def test_make_subgraph():
                         rtol=0.001, atol=0.0001)
 
 
+@pytest.mark.serial
 def test_subgraph_with_customOp():
     class MyAdd(mx.operator.CustomOp):
         def forward(self, is_train, req, in_data, out_data, aux):
@@ -193,10 +187,6 @@ def test_subgraph_with_customOp():
     b = a + 1
     b = mx.symbol.Custom(data=a, op_type='MyAdd1')
     c = mx.symbol.Custom(data=a, op_type='MyAdd2')
-    b.bind(mx.cpu(), {'a': inp}).forward()
-    c.bind(mx.cpu(), {'a': inp}).forward()
+    b._bind(mx.cpu(), {'a': inp}).forward()
+    c._bind(mx.cpu(), {'a': inp}).forward()
     mx.nd.waitall()
-
-if __name__ == '__main__':
-    import nose
-    nose.runmodule()

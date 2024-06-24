@@ -18,7 +18,6 @@
  */
 
 /*!
- *  Copyright (c) 2016 by Contributors
  * \file MxNetCpp.h
  * \brief meta include file for mxnet.cpp
  * \author Chuntao Hong, Zhang Chen
@@ -30,7 +29,6 @@
 #include "mxnet-cpp/executor.hpp"
 #include "mxnet-cpp/symbol.hpp"
 #include "mxnet-cpp/ndarray.hpp"
-#include "mxnet-cpp/monitor.hpp"
 #include "mxnet-cpp/operator.hpp"
 #include "mxnet-cpp/optimizer.hpp"
 #include "mxnet-cpp/kvstore.hpp"

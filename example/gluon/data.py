@@ -78,7 +78,7 @@ def get_imagenet_iterator(root, batch_size, num_workers, data_shape=224, dtype='
     train_dir = os.path.join(root, 'train')
     train_transform, val_transform = get_imagenet_transforms(data_shape, dtype)
     logging.info("Loading image folder %s, this may take a bit long...", train_dir)
-    train_dataset = ImageFolderDataset(train_dir, transform=train_transform)
+    train_dataset = ImageFolderDataset(train_dir).transform_first(train_transform)
     train_data = DataLoader(train_dataset, batch_size, shuffle=True,
                             last_batch='discard', num_workers=num_workers)
     val_dir = os.path.join(root, 'val')
@@ -86,7 +86,7 @@ def get_imagenet_iterator(root, batch_size, num_workers, data_shape=224, dtype='
         user_warning = 'Make sure validation images are stored in one subdir per category, a helper script is available at https://git.io/vNQv1'
         raise ValueError(user_warning)
     logging.info("Loading image folder %s, this may take a bit long...", val_dir)
-    val_dataset = ImageFolderDataset(val_dir, transform=val_transform)
+    val_dataset = ImageFolderDataset(val_dir).transform(val_transform)
     val_data = DataLoader(val_dataset, batch_size, last_batch='keep', num_workers=num_workers)
     return DataLoaderIter(train_data, dtype), DataLoaderIter(val_data, dtype)
 
@@ -118,8 +118,8 @@ def get_caltech101_iterator(batch_size, num_workers, dtype):
         return transposed, label
 
     training_path, testing_path = get_caltech101_data()
-    dataset_train = ImageFolderDataset(root=training_path, transform=transform)
-    dataset_test = ImageFolderDataset(root=testing_path, transform=transform)
+    dataset_train = ImageFolderDataset(root=training_path).transform(transform)
+    dataset_test = ImageFolderDataset(root=testing_path).transform(transform)
 
     train_data = DataLoader(dataset_train, batch_size, shuffle=True, num_workers=num_workers)
     test_data = DataLoader(dataset_test, batch_size, shuffle=False, num_workers=num_workers)
@@ -174,7 +174,7 @@ class ImagePairIter(mx.io.DataIter):
                 image = Image.open(fn).convert('YCbCr').split()[0]
                 if image.size[0] > image.size[1]:
                     image = image.transpose(Image.TRANSPOSE)
-                image = mx.nd.expand_dims(mx.nd.array(image), axis=2)
+                image = mx.np.expand_dims(mx.np.array(image), axis=2)
                 target = image.copy()
                 for aug in self.input_aug:
                     image = aug(image)
@@ -183,10 +183,10 @@ class ImagePairIter(mx.io.DataIter):
                 data.append(image)
                 label.append(target)
 
-            data = mx.nd.concat(*[mx.nd.expand_dims(d, axis=0) for d in data], dim=0)
-            label = mx.nd.concat(*[mx.nd.expand_dims(d, axis=0) for d in label], dim=0)
-            data = [mx.nd.transpose(data, axes=(0, 3, 1, 2)).astype('float32')/255]
-            label = [mx.nd.transpose(label, axes=(0, 3, 1, 2)).astype('float32')/255]
+            data = mx.np.concatenate([mx.np.expand_dims(d, axis=0) for d in data], axis=0)
+            label = mx.np.concatenate([mx.np.expand_dims(d, axis=0) for d in label], axis=0)
+            data = [mx.np.transpose(data, axes=(0, 3, 1, 2)).astype('float32')/255]
+            label = [mx.np.transpose(label, axes=(0, 3, 1, 2)).astype('float32')/255]
 
             return mx.io.DataBatch(data=data, label=label)
         else:

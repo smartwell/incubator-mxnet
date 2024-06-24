@@ -18,16 +18,12 @@
  */
 
 /*!
- * Copyright (c) 2015 by Contributors
  * \file cpu_device_storage.h
  * \brief CPU storage implementation.
  */
 #ifndef MXNET_STORAGE_CPU_DEVICE_STORAGE_H_
 #define MXNET_STORAGE_CPU_DEVICE_STORAGE_H_
 
-#include <dmlc/logging.h>
-#include <cstdlib>
-#include <new>
 #include "mxnet/base.h"
 
 namespace mxnet {
@@ -41,8 +37,9 @@ class CPUDeviceStorage {
   /*!
    * \brief Aligned allocation on CPU.
    * \param handle Handle struct.
+   * \param failsafe Return a handle with a null dptr if out of memory, rather than exit.
    */
-  inline static void Alloc(Storage::Handle* handle);
+  inline static void Alloc(Storage::Handle* handle, bool failsafe = false);
   /*!
    * \brief Deallocation.
    * \param handle Handle struct.
@@ -53,35 +50,23 @@ class CPUDeviceStorage {
   /*!
    * \brief Alignment of allocation.
    */
-#if MXNET_USE_MKLDNN == 1
-  // MKLDNN requires special alignment. 64 is used by the MKLDNN library in
+#if MXNET_USE_ONEDNN == 1 || MXNET_USE_INTGEMM == 1
+  // DNNL requires special alignment. 64 is used by the DNNL library in
   // memory allocation.
-  static constexpr size_t alignment_ = kMKLDNNAlign;
+  static constexpr size_t alignment_ = kDNNLAlign;
 #else
   static constexpr size_t alignment_ = 16;
 #endif
 };  // class CPUDeviceStorage
 
-inline void CPUDeviceStorage::Alloc(Storage::Handle* handle) {
-  handle->dptr = nullptr;
-  const size_t size = handle->size;
-  if (size == 0) return;
-
-#if _MSC_VER
-  handle->dptr = _aligned_malloc(size, alignment_);
-  if (handle->dptr == nullptr) LOG(FATAL) << "Failed to allocate CPU Memory";
-#else
-  int ret = posix_memalign(&handle->dptr, alignment_, size);
-  if (ret != 0) LOG(FATAL) << "Failed to allocate CPU Memory";
-#endif
+inline void CPUDeviceStorage::Alloc(Storage::Handle* handle, bool /* failsafe */) {
+  bool success = mxnet::common::AlignedMemAlloc(&(handle->dptr), handle->size, alignment_);
+  if (!success)
+    LOG(FATAL) << "Failed to allocate CPU Memory";
 }
 
 inline void CPUDeviceStorage::Free(Storage::Handle handle) {
-#if _MSC_VER
-  _aligned_free(handle.dptr);
-#else
-  free(handle.dptr);
-#endif
+  mxnet::common::AlignedMemFree(handle.dptr);
 }
 
 }  // namespace storage

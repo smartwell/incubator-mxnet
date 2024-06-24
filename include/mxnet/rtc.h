@@ -20,7 +20,7 @@
 #ifndef MXNET_RTC_H_
 #define MXNET_RTC_H_
 #include "./base.h"
-#if MXNET_USE_CUDA && MXNET_ENABLE_CUDA_RTC
+#if MXNET_USE_CUDA
 #include <nvrtc.h>
 #include <cuda.h>
 
@@ -60,7 +60,7 @@ class CudaModule {
     /*! \brief nvrtc program handle. */
     nvrtcProgram prog_;
     /*! \brief compiled cuda PTX */
-    char* ptx_;
+    std::vector<char> ptx_;
     /*! \brief lazily loaded cuda module */
     std::unordered_map<int, CUmodule> mod_;
     /*! \brief exported names */
@@ -83,12 +83,19 @@ class CudaModule {
   class Kernel {
    public:
     /*! \brief Launch the kernel */
-    void Launch(const Context& ctx, const std::vector<dmlc::any>& args,
-                uint32_t grid_dim_x, uint32_t grid_dim_y, uint32_t grid_dim_z,
-                uint32_t block_dim_x, uint32_t block_dim_y, uint32_t block_dim_z,
+    void Launch(const Context& ctx,
+                const std::vector<dmlc::any>& args,
+                uint32_t grid_dim_x,
+                uint32_t grid_dim_y,
+                uint32_t grid_dim_z,
+                uint32_t block_dim_x,
+                uint32_t block_dim_y,
+                uint32_t block_dim_z,
                 uint32_t shared_mem);
     /*! \brief kernel interface signature */
-    const std::vector<ArgType>& signature() { return signature_; }
+    const std::vector<ArgType>& signature() {
+      return signature_;
+    }
 
    private:
     friend class CudaModule;
@@ -125,12 +132,11 @@ class CudaModule {
    * \param signature kernel signature
    * \return shared pointer to cuda kernel
    */
-  std::shared_ptr<Kernel> GetKernel(const std::string& name,
-                                    const std::vector<ArgType>& signature);
+  std::shared_ptr<Kernel> GetKernel(const std::string& name, const std::vector<ArgType>& signature);
 };
 
 }  // namespace rtc
 }  // namespace mxnet
 
-#endif  // MXNET_USE_CUDA && MXNET_ENABLE_CUDA_RTC
+#endif  // MXNET_USE_CUDA
 #endif  // MXNET_RTC_H_

@@ -21,8 +21,7 @@
  * \file special_functions-inl.h
  * \brief
  * \author Matthias Seeger
-*/
-
+ */
 
 #ifndef MXNET_OPERATOR_MATH_FUNCTIONS_INL_H_
 #define MXNET_OPERATOR_MATH_FUNCTIONS_INL_H_
@@ -35,30 +34,35 @@ namespace op {
 namespace math {
 
 // Wrappers for math.h unary and binary functions
-// - For DType != double: math::name(a) does computation in float
+// - For DType == float: math::name(a) does computation in float
 //   and returns float
-// - For DType == double: math::name(a) does computation in double
+// - For DType == double or DType == integer: math::name(a) does computation in double
 //   and returns double
 
-#define MXNET_UNARY_MATH_FUNC(name) \
-template<typename DType> MSHADOW_XINLINE \
-float name(DType a) { \
-  return ::name##f(static_cast<float>(a)); \
-} \
-MSHADOW_XINLINE \
-double name(double a) { \
-  return ::name(a); \
-}
+#define MXNET_UNARY_MATH_FUNC(name)                                                           \
+  MSHADOW_XINLINE                                                                             \
+  float name(float a) {                                                                       \
+    return ::name##f(a);                                                                      \
+  }                                                                                           \
+  MSHADOW_XINLINE                                                                             \
+  double name(double a) {                                                                     \
+    return ::name(a);                                                                         \
+  }                                                                                           \
+  template <typename DType>                                                                   \
+  MSHADOW_XINLINE typename std::enable_if<std::is_integral<DType>::value, double>::type name( \
+      DType a) {                                                                              \
+    return ::name(static_cast<double>(a));                                                    \
+  }
 
-#define MXNET_BINARY_MATH_FUNC(name) \
-template<typename DType> MSHADOW_XINLINE \
-float name(DType a, DType b) { \
-  return ::name##f(static_cast<float>(a), static_cast<float>(b)); \
-} \
-MSHADOW_XINLINE \
-double name(double a, double b) { \
-  return ::name(a, b); \
-}
+#define MXNET_BINARY_MATH_FUNC(name)                                \
+  template <typename DType>                                         \
+  MSHADOW_XINLINE float name(DType a, DType b) {                    \
+    return ::name##f(static_cast<float>(a), static_cast<float>(b)); \
+  }                                                                 \
+  MSHADOW_XINLINE                                                   \
+  double name(double a, double b) {                                 \
+    return ::name(a, b);                                            \
+  }
 
 MXNET_UNARY_MATH_FUNC(erf)
 
@@ -120,8 +124,10 @@ MXNET_BINARY_MATH_FUNC(hypot)
 
 MXNET_BINARY_MATH_FUNC(pow)
 
-template<typename DType> MSHADOW_XINLINE
-float id(DType a) {
+MXNET_BINARY_MATH_FUNC(atan2)
+
+template <typename DType>
+MSHADOW_XINLINE float id(DType a) {
   return static_cast<float>(a);
 }
 MSHADOW_XINLINE
@@ -129,8 +135,8 @@ double id(double a) {
   return a;
 }
 
-template<typename DType> MSHADOW_XINLINE
-float sqr(DType a) {
+template <typename DType>
+MSHADOW_XINLINE float sqr(DType a) {
   float af(static_cast<float>(a));
   return af * af;
 }

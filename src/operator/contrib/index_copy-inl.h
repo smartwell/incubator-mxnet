@@ -37,14 +37,14 @@
 namespace mxnet {
 namespace op {
 
-template<typename xpu>
+template <typename xpu>
 void IndexCopyForward(const nnvm::NodeAttrs& attrs,
                       const OpContext& ctx,
                       const std::vector<TBlob>& inputs,
                       const std::vector<OpReqType>& req,
                       const std::vector<TBlob>& outputs);
 
-template<typename xpu>
+template <typename xpu>
 void IndexCopyBackward(const nnvm::NodeAttrs& attrs,
                        const OpContext& ctx,
                        const std::vector<TBlob>& inputs,
@@ -52,8 +52,8 @@ void IndexCopyBackward(const nnvm::NodeAttrs& attrs,
                        const std::vector<TBlob>& outputs);
 
 inline bool IndexCopyShape(const nnvm::NodeAttrs& attrs,
-                           mxnet::ShapeVector *in_attrs,
-                           mxnet::ShapeVector *out_attrs) {
+                           mxnet::ShapeVector* in_attrs,
+                           mxnet::ShapeVector* out_attrs) {
   // inputs[0]: original tensor
   // inputs[1]: index vector
   // inputs[2]: copied tensor
@@ -71,7 +71,7 @@ inline bool IndexCopyShape(const nnvm::NodeAttrs& attrs,
       CHECK_EQ(in_attrs->at(0)[i], in_attrs->at(2)[i]);
     }
   }
-  // The the length of the fitrst dim of copied tensor
+  // The the length of the first dim of copied tensor
   // must equal to the size of index vector
   CHECK_EQ(in_attrs->at(1)[0], in_attrs->at(2)[0]);
   SHAPE_ASSIGN_CHECK(*out_attrs, 0, in_attrs->at(0));

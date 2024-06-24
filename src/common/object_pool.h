@@ -17,9 +17,6 @@
  * under the License.
  */
 
-/*!
- * Copyright (c) 2015 by Contributors
- */
 #ifndef MXNET_COMMON_OBJECT_POOL_H_
 #define MXNET_COMMON_OBJECT_POOL_H_
 #include <dmlc/logging.h>
@@ -64,7 +61,7 @@ class ObjectPool {
    * \brief Get a shared ptr of the singleton instance of pool.
    * \return Shared pointer to the Object Pool.
    */
-  static std::shared_ptr<ObjectPool> _GetSharedRef();
+  static const std::shared_ptr<ObjectPool>& _GetSharedRef();
 
  private:
   /*!
@@ -133,7 +130,11 @@ struct ObjectPoolAllocatable {
 template <typename T>
 ObjectPool<T>::~ObjectPool() {
   for (auto i : allocated_) {
+#ifdef _MSC_VER
+    _aligned_free(i);
+#else
     free(i);
+#endif
   }
 }
 
@@ -146,7 +147,7 @@ T* ObjectPool<T>::New(Args&&... args) {
     if (head_->next == nullptr) {
       AllocateChunk();
     }
-    ret = head_;
+    ret   = head_;
     head_ = head_->next;
   }
   return new (static_cast<void*>(ret)) T(std::forward<Args>(args)...);
@@ -159,7 +160,7 @@ void ObjectPool<T>::Delete(T* ptr) {
   {
     std::lock_guard<std::mutex> lock{m_};
     linked_list_ptr->next = head_;
-    head_ = linked_list_ptr;
+    head_                 = linked_list_ptr;
   }
 }
 
@@ -169,7 +170,7 @@ ObjectPool<T>* ObjectPool<T>::Get() {
 }
 
 template <typename T>
-std::shared_ptr<ObjectPool<T> > ObjectPool<T>::_GetSharedRef() {
+const std::shared_ptr<ObjectPool<T> >& ObjectPool<T>::_GetSharedRef() {
   static std::shared_ptr<ObjectPool<T> > inst_ptr(new ObjectPool<T>());
   return inst_ptr;
 }
@@ -188,19 +189,19 @@ void ObjectPool<T>::AllocateChunk() {
   void* new_chunk_ptr;
 #ifdef _MSC_VER
   new_chunk_ptr = _aligned_malloc(kPageSize, kPageSize);
-  CHECK(new_chunk_ptr != NULL) << "Allocation failed";
+  CHECK(new_chunk_ptr != nullptr) << "Allocation failed";
 #else
   int ret = posix_memalign(&new_chunk_ptr, kPageSize, kPageSize);
   CHECK_EQ(ret, 0) << "Allocation failed";
 #endif
   allocated_.emplace_back(new_chunk_ptr);
   auto new_chunk = static_cast<LinkedList*>(new_chunk_ptr);
-  auto size = kPageSize / sizeof(LinkedList);
+  auto size      = kPageSize / sizeof(LinkedList);
   for (std::size_t i = 0; i < size - 1; ++i) {
     new_chunk[i].next = &new_chunk[i + 1];
   }
   new_chunk[size - 1].next = head_;
-  head_ = new_chunk;
+  head_                    = new_chunk;
 }
 
 template <typename T>

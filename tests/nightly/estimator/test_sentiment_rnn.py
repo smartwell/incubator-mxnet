@@ -32,10 +32,7 @@ from mxnet.contrib import text
 from mxnet.gluon import nn, rnn
 from mxnet.gluon.contrib.estimator import estimator
 
-# use with_seed decorator in python/unittest/common.py
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'python', 'unittest'))
-from common import with_seed
-import unittest
+import pytest
 
 
 class TextCNN(nn.Block):
@@ -58,8 +55,8 @@ class TextCNN(nn.Block):
     def forward(self, inputs):
         # Concatenate the output of two embedding layers with shape of
         # (batch size, number of words, word vector dimension) by word vector
-        embeddings = nd.concat(
-            self.embedding(inputs), self.constant_embedding(inputs), dim=2)
+        embeddings = mx.np.concatenate(
+            [self.embedding(inputs), self.constant_embedding(inputs)], axis=2)
         # According to the input format required by Conv1D, the word vector
         # dimension, that is, the channel dimension of the one-dimensional
         # convolutional layer, is transformed into the previous dimension
@@ -68,8 +65,8 @@ class TextCNN(nn.Block):
         # pooling, an NDArray with the shape of (batch size, channel size, 1)
         # can be obtained. Use the flatten function to remove the last
         # dimension and then concatenate on the channel dimension
-        encoding = nd.concat(*[nd.flatten(
-            self.pool(conv(embeddings))) for conv in self.convs], dim=1)
+        encoding = mx.np.concatenate([mx.npx.batch_flatten(
+            self.pool(conv(embeddings))) for conv in self.convs], axis=1)
         # After applying the dropout method, use a fully connected layer to
         # obtain the output
         outputs = self.decoder(self.dropout(encoding))
@@ -98,7 +95,7 @@ class BiRNN(nn.Block):
         # Concatenate the hidden states of the initial time step and final
         # time step to use as the input of the fully connected layer. Its
         # shape is (batch size, 4 * number of hidden units)
-        encoding = nd.concat(states[0], states[-1])
+        encoding = mx.np.concatenate([states[0], states[-1]], axis=1)
         outputs = self.decoder(encoding)
         return outputs
 
@@ -176,8 +173,8 @@ def preprocess_imdb(data, vocab):
         return x[:max_l] if len(x) > max_l else x + [0] * (max_l - len(x))
 
     tokenized_data = get_tokenized_imdb(data)
-    features = nd.array([pad(vocab.to_indices(x)) for x in tokenized_data])
-    labels = nd.array([score for _, score in data])
+    features = mx.np.array([pad(vocab.to_indices(x)) for x in tokenized_data])
+    labels = mx.np.array([score for _, score in data])
     return features, labels
 
 
@@ -190,10 +187,14 @@ def run(net, train_dataloader, test_dataloader, num_epochs, ctx, lr):
     trainer = mx.gluon.Trainer(net.collect_params(), 'adam', {'learning_rate': lr})
     # Define loss and evaluation metrics
     loss = gluon.loss.SoftmaxCrossEntropyLoss()
-    acc = mx.metric.Accuracy()
+    metrics = mx.gluon.metric.CompositeEvalMetric()
+    acc = mx.gluon.metric.Accuracy()
+    nested_metrics = mx.gluon.metric.CompositeEvalMetric()
+    metrics.add([acc, mx.gluon.metric.Loss()])
+    nested_metrics.add([metrics, mx.gluon.metric.Accuracy()])
 
     # Define estimator
-    est = estimator.Estimator(net=net, loss=loss, metrics=acc,
+    est = estimator.Estimator(net=net, loss=loss, train_metrics=nested_metrics,
                               trainer=trainer, context=ctx)
     # Begin training
     est.fit(train_data=train_dataloader, val_data=test_dataloader,
@@ -201,7 +202,6 @@ def run(net, train_dataloader, test_dataloader, num_epochs, ctx, lr):
     return acc
 
 
-@with_seed()
 def test_estimator_cpu():
     '''
     Test estimator by doing one pass over each model with synthetic data
@@ -213,16 +213,16 @@ def test_estimator_cpu():
     lr = 1
     num_epochs = 1
 
-    train_data = mx.nd.random.randint(low=0, high=100, shape=(2 * batch_size, 500))
-    train_label = mx.nd.random.randint(low=0, high=2, shape=(2 * batch_size,))
-    val_data = mx.nd.random.randint(low=0, high=100, shape=(batch_size, 500))
-    val_label = mx.nd.random.randint(low=0, high=2, shape=(batch_size,))
+    train_data = mx.np.random.randint(low=0, high=100, size=(2 * batch_size, 500))
+    train_label = mx.np.random.randint(low=0, high=2, size=(2 * batch_size,))
+    val_data = mx.np.random.randint(low=0, high=100, size=(batch_size, 500))
+    val_label = mx.np.random.randint(low=0, high=2, size=(batch_size,))
 
     train_dataloader = gluon.data.DataLoader(dataset=gluon.data.ArrayDataset(train_data, train_label),
                                              batch_size=batch_size, shuffle=True)
     val_dataloader = gluon.data.DataLoader(dataset=gluon.data.ArrayDataset(val_data, val_label),
                                            batch_size=batch_size)
-    vocab_list = mx.nd.zeros(shape=(100,))
+    vocab_list = mx.np.zeros(shape=(100,))
 
     # Get the model
     for model in models:
@@ -237,9 +237,8 @@ def test_estimator_cpu():
         run(net, train_dataloader, val_dataloader, num_epochs=num_epochs, ctx=ctx, lr=lr)
 
 
-# using fixed seed to reduce flakiness in accuracy assertion
-@with_seed(7)
-@unittest.skipIf(mx.context.num_gpus() < 1, "skip if no GPU")
+@pytest.mark.seed(7)  # using fixed seed to reduce flakiness in accuracy assertion
+@pytest.mark.skipif(mx.device.num_gpus() < 1, reason="skip if no GPU")
 def test_estimator_gpu():
     '''
     Test estimator by training Bidirectional RNN for 5 epochs on the IMDB dataset
@@ -265,18 +264,15 @@ def test_estimator_gpu():
     num_hiddens, num_layers = 100, 2
     net = BiRNN(vocab, embed_size, num_hiddens, num_layers)
     net.initialize(mx.init.Xavier(), ctx=ctx)
+    net.hybridize()
 
     glove_embedding = text.embedding.create(
         'glove', pretrained_file_name='glove.6B.100d.txt', vocabulary=vocab)
 
     net.embedding.weight.set_data(glove_embedding.idx_to_vec)
-    net.embedding.collect_params().setattr('grad_req', 'null')
+    net.embedding.setattr('grad_req', 'null')
 
     acc = run(net, train_dataloader, test_dataloader, num_epochs=num_epochs, ctx=ctx, lr=lr)
 
     assert acc.get()[1] > 0.70
 
-
-if __name__ == '__main__':
-    import nose
-    nose.runmodule()

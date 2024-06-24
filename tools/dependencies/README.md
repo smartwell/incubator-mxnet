@@ -1,19 +1,22 @@
-<!--- Licensed to the Apache Software Foundation (ASF) under one -->
-<!--- or more contributor license agreements.  See the NOTICE file -->
-<!--- distributed with this work for additional information -->
-<!--- regarding copyright ownership.  The ASF licenses this file -->
-<!--- to you under the Apache License, Version 2.0 (the -->
-<!--- "License"); you may not use this file except in compliance -->
-<!--- with the License.  You may obtain a copy of the License at -->
-
-<!---   http://www.apache.org/licenses/LICENSE-2.0 -->
-
-<!--- Unless required by applicable law or agreed to in writing, -->
-<!--- software distributed under the License is distributed on an -->
-<!--- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY -->
-<!--- KIND, either express or implied.  See the License for the -->
-<!--- specific language governing permissions and limitations -->
-<!--- under the License. -->
+<!--
+  ~ Licensed to the Apache Software Foundation (ASF) under one
+  ~ or more contributor license agreements.  See the NOTICE file
+  ~ distributed with this work for additional information
+  ~ regarding copyright ownership.  The ASF licenses this file
+  ~ to you under the Apache License, Version 2.0 (the
+  ~ "License"); you may not use this file except in compliance
+  ~ with the License.  You may obtain a copy of the License at
+  ~
+  ~   http://www.apache.org/licenses/LICENSE-2.0
+  ~
+  ~ Unless required by applicable law or agreed to in writing,
+  ~ software distributed under the License is distributed on an
+  ~ "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+  ~ KIND, either express or implied.  See the License for the
+  ~ specific language governing permissions and limitations
+  ~ under the License.
+  ~
+-->
 
 # Overview
 
@@ -49,12 +52,12 @@ MXNet is built on top of many dependencies. Managing these dependencies could be
 
 ## Overview
 
-The dependencies could be categorized by several groups: BLAS libraries, CPU-based performance boost library, i.e. MKLDNN and GPU-based performance boosting library including CUDA, cuDNN, NCCL. and others including OpenCV, Numpy, S3-related, PS-lite dependencies. The list below shows all the dependencies and their version. Except for CUDA, cuDNN, NCCL which the user is required to install on their environments, we statically link those dependencies into libmxnet.so when we build PyPi package. By doing this, the user can take advantage of these dependencies without being worry about it.
+The dependencies could be categorized by several groups: BLAS libraries, CPU-based performance boost library, i.e. oneDNN and GPU-based performance boosting library including CUDA, cuDNN, NCCL. and others including OpenCV, Numpy, S3-related, PS-lite dependencies. The list below shows all the dependencies and their version. Except for CUDA, cuDNN, NCCL which the user is required to install on their environments, we statically link those dependencies into libmxnet.so when we build PyPi package. By doing this, the user can take advantage of these dependencies without being worry about it.
 
 | Dependencies  | MXNet Version |
 | :------------: |:-------------:| 
-|OpenBLAS| 0.3.3 |
-|MKLDNN| 0.19 | 
+|OpenBLAS| 0.3.9 |
+|oneDNN| 2.6 |
 |CUDA| 10.1 |
 |cuDNN| 7.5.1 |
 |NCCL| 2.4.2 |
@@ -76,18 +79,8 @@ The dependencies could be categorized by several groups: BLAS libraries, CPU-bas
 
 ## How to update them?
 
-### MKL, MKLDNN
-
-@pengzhao-intel (https://github.com/apache/incubator-mxnet/commits?author=pengzhao-intel) and his team are tracking and updating these versions. Kudos to them!
-
-### CUDA, cuDNN, NCCL
-#### 1. Environment Setup
-We will install all the prerequsite software.
-We demonstrate with CUDA10/cuDNN7.5/NCCL 2.4.2.
-You might want to change these versions to suit your needs.
-
+#### 0. Prerequisite Software
 ```
-# Take Ubuntu 16.04 for example.
 sudo apt update
 sudo apt-get install -y git \
     cmake \
@@ -109,9 +102,21 @@ sudo apt-get install -y git \
     pandoc \
     python3-pip \
     automake \
-    pkg-config \
-    openjdk-8-jdk
-    
+    pkg-config
+```
+
+### MKL, oneDNN
+
+@pengzhao-intel (https://github.com/apache/mxnet/commits?author=pengzhao-intel) and his team are tracking and updating these versions. Kudos to them!
+
+### CUDA, cuDNN, NCCL
+
+#### 1. Environment Setup
+We will install all the prerequsite software.
+We demonstrate with CUDA10/cuDNN7.5/NCCL 2.4.2.
+You might want to change these versions to suit your needs.
+
+```    
 # CUDA installation 
 # Take CUDA 10 for example, please follow the instructions on https://developer.nvidia.com/cuda-downloads
 # Install NVIDIA Accelerated Graphics Driver for Linux-x86_64 410.48?
@@ -179,8 +184,8 @@ sudo apt install libnccl2 libnccl-dev
 We will build MXNet with statically linked dependencies.
 ```
 # Clone MXNet repo
-git clone --recursive https://github.com/apache/incubator-mxnet.git
-cd incubator-mxnet
+git clone --recursive https://github.com/apache/mxnet.git
+cd mxnet
 # Make sure you pin to specific commit for all the performance sanity check to make fair comparison
 # Make corresponding change on tools/setup_gpu_build_tools.sh
 # to upgrade CUDA version, please refer to PR #14887.
@@ -188,9 +193,9 @@ cd incubator-mxnet
 # http://developer.download.nvidia.com/compute/cuda/repos/ubuntu1604/x86_64/
 
 # Build PyPi package
-tools/staticbuild/build.sh cu100mkl pip
+tools/staticbuild/build.sh cu100mkl
 
-# Wait for 10 - 30 mins, you will find libmxnet.so under the incubator-mxnet/lib
+# Wait for 10 - 30 mins, you will find libmxnet.so under the mxnet/lib
 
 # Install python frontend
 pip install -e python
@@ -202,7 +207,7 @@ pip install -e python
 export NCCL_DEBUG=VERSION
 vim tests/python/gpu/test_nccl.py
 # Remove @unittest.skip("Test requires NCCL library installed and enabled during build") then run
-nosetests --verbose tests/python/gpu/test_nccl.py
+pytest --verbose tests/python/gpu/test_nccl.py
 # test_nccl.test_nccl_pushpull ... NCCL version 2.4.2+cuda10.0
 # ok
 # ----------------------------------------------------------------------
@@ -214,19 +219,18 @@ OK
 Please run performance test aginast the MXNet you build before raising the PR.
 
 #### 4. Raise a PR
-1. Update the tools/setup_gpu_build_tools.sh please refer to PR [#14988](https://github.com/apache/incubator-mxnet/pull/14988), [#14887](https://github.com/apache/incubator-mxnet/pull/14887/files)
-2. (optional) Update the CI-related configuration/shell script/Dockerfile. Please refer to PR [#14986](https://github.com/apache/incubator-mxnet/pull/14986/files), [#14950](https://github.com/apache/incubator-mxnet/pull/14950/files)
+1. Update the tools/setup_gpu_build_tools.sh please refer to PR [#14988](https://github.com/apache/mxnet/pull/14988), [#14887](https://github.com/apache/mxnet/pull/14887/files)
+2. (optional) Update the CI-related configuration/shell script/Dockerfile. Please refer to PR [#14986](https://github.com/apache/mxnet/pull/14986/files), [#14950](https://github.com/apache/mxnet/pull/14950/files)
 
 #### 5. CI Test
 1. Our CI would test PyPi and Scala publish of latest CUDA version i.e. mxnet-cu101mkl
 
 ### numpy, requests, graphviz (python dependencies)
-1. Please refer to [#14588](https://github.com/apache/incubator-mxnet/pull/14588/files) and make sure the version have both of upper bound and lower bound
+1. Please refer to [#14588](https://github.com/apache/mxnet/pull/14588/files) and make sure the version have both of upper bound and lower bound
 #### Checklist
 - [ ] Python/setup.py
 - [ ] tools/pip/setup.py
-- [ ] ci/docker/install/docs_requirements
-- [ ] ci/docker/install/ubuntu_publish.sh
+- [ ] ci/docker/install/requirements
 - [ ] ci/docker/install/ubuntu_python.sh
 - [ ] ci/qemu/mxnet_requirements.txt
 - [ ] docs/install/requirements.txt 
@@ -272,15 +276,14 @@ sudo apt-get install -y git \
     pandoc \
     python3-pip \
     automake \
-    pkg-config \
-    openjdk-8-jdk
+    pkg-config
 ```
 2. Build PyPi package
 ```
 # Update the dependency under tools/dependencies, then
-tools/staticbuild/build.sh mkl pip
+tools/staticbuild/build.sh mkl
 
-# Wait for 10 - 30 mins, you will find libmxnet.so under the incubator-mxnet/lib
+# Wait for 10 - 30 mins, you will find libmxnet.so under the mxnet/lib
 
 # Install python frontend
 pip install -e python
@@ -322,15 +325,14 @@ sudo apt-get install -y git \
     pandoc \
     python3-pip \
     automake \
-    pkg-config \
-    openjdk-8-jdk
+    pkg-config
 ```
 2. Build PyPi package
 ```
 # Update the dependency under tools/dependencies, then
-tools/staticbuild/build.sh mkl pip
+tools/staticbuild/build.sh mkl
 
-# Wait for 10 - 30 mins, you will find libmxnet.so under the incubator-mxnet/lib
+# Wait for 10 - 30 mins, you will find libmxnet.so under the mxnet/lib
 
 # Install python frontend
 pip install -e python

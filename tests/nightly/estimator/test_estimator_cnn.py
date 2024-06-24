@@ -21,16 +21,13 @@ import os
 import sys
 
 import mxnet as mx
-import numpy as np
+import numpy as onp
 from mxnet import gluon, init, nd
 from mxnet.gluon import data
 from mxnet.gluon.contrib.estimator import estimator
 from mxnet.gluon.model_zoo import vision
 
-# use with_seed decorator in python/unittest/common.py
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'python', 'unittest'))
-from common import with_seed
-import unittest
+import pytest
 
 
 def load_data_mnist(batch_size, resize=None, num_workers=4):
@@ -63,11 +60,11 @@ def bilinear_kernel(in_channels, out_channels, kernel_size):
         center = factor - 1
     else:
         center = factor - 0.5
-    og = np.ogrid[:kernel_size, :kernel_size]
+    og = onp.ogrid[:kernel_size, :kernel_size]
     filt = (1 - abs(og[0] - center) / factor) * (1 - abs(og[1] - center) / factor)
-    weight = np.zeros((in_channels, out_channels, kernel_size, kernel_size), dtype='float32')
+    weight = onp.zeros((in_channels, out_channels, kernel_size, kernel_size), dtype='float32')
     weight[range(in_channels), range(out_channels), :, :] = filt
-    return nd.array(weight)
+    return mx.np.array(weight)
 
 
 def get_net(model_name, context):
@@ -93,7 +90,6 @@ def get_net(model_name, context):
     return net, input_shape, label_shape, loss_axis
 
 
-@with_seed()
 def test_estimator_cpu():
     '''
     Test estimator by doing one pass over each model with synthetic data
@@ -104,10 +100,10 @@ def test_estimator_cpu():
     context = mx.cpu()
     for model_name in models:
         net, input_shape, label_shape, loss_axis = get_net(model_name, context)
-        train_dataset = gluon.data.dataset.ArrayDataset(mx.nd.random.uniform(shape=input_shape),
-                                                        mx.nd.zeros(shape=label_shape))
-        val_dataset = gluon.data.dataset.ArrayDataset(mx.nd.random.uniform(shape=input_shape),
-                                                      mx.nd.zeros(shape=label_shape))
+        train_dataset = gluon.data.dataset.ArrayDataset(mx.np.random.uniform(size=input_shape),
+                                                        mx.np.zeros(shape=label_shape))
+        val_dataset = gluon.data.dataset.ArrayDataset(mx.np.random.uniform(size=input_shape),
+                                                      mx.np.zeros(shape=label_shape))
         loss = gluon.loss.SoftmaxCrossEntropyLoss(axis=loss_axis)
         train_data = gluon.data.DataLoader(train_dataset, batch_size=1)
         val_data = gluon.data.DataLoader(val_dataset, batch_size=1)
@@ -116,7 +112,7 @@ def test_estimator_cpu():
         # Define estimator
         est = estimator.Estimator(net=net,
                                   loss=loss,
-                                  metrics=mx.metric.Accuracy(),
+                                  train_metrics=mx.gluon.metric.Accuracy(),
                                   trainer=trainer,
                                   context=context)
         # Call fit()
@@ -125,9 +121,8 @@ def test_estimator_cpu():
                 epochs=1)
 
 
-# using fixed seed to reduce flakiness in accuracy assertion
-@with_seed(7)
-@unittest.skipIf(mx.context.num_gpus() < 1, "skip if no GPU")
+@pytest.mark.seed(7)  # using fixed seed to reduce flakiness in accuracy assertion
+@pytest.mark.skipif(mx.device.num_gpus() < 1, reason="skip if no GPU")
 def test_estimator_gpu():
     '''
     Test estimator by training resnet18_v1 for 5 epochs on MNIST and verify accuracy
@@ -140,12 +135,12 @@ def test_estimator_gpu():
     train_data, test_data = load_data_mnist(batch_size, resize=224)
     loss = gluon.loss.SoftmaxCrossEntropyLoss()
     net.hybridize()
-    acc = mx.metric.Accuracy()
+    acc = mx.gluon.metric.Accuracy()
     trainer = gluon.Trainer(net.collect_params(), 'sgd', {'learning_rate': 0.001})
     # Define estimator
     est = estimator.Estimator(net=net,
                               loss=loss,
-                              metrics=acc,
+                              train_metrics=acc,
                               trainer=trainer,
                               context=context)
     # Call fit()
@@ -155,7 +150,3 @@ def test_estimator_gpu():
 
     assert acc.get()[1] > 0.80
 
-
-if __name__ == '__main__':
-    import nose
-    nose.runmodule()

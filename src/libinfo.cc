@@ -18,7 +18,6 @@
  */
 
 /*!
- *  Copyright (c) 2018 by Contributors
  * \file libinfo.cc
  * \author larroy
  * \brief check MXNet features including compile time support
@@ -33,14 +32,13 @@ namespace features {
 
 class FeatureSet {
  public:
-  FeatureSet() :
-      feature_bits() {
+  FeatureSet() : feature_bits() {
     // GPU
     feature_bits.set(CUDA, MXNET_USE_CUDA);
     feature_bits.set(CUDNN, MXNET_USE_CUDNN);
     feature_bits.set(NCCL, MXNET_USE_NCCL);
-    feature_bits.set(CUDA_RTC, MXNET_ENABLE_CUDA_RTC);
     feature_bits.set(TENSORRT, MXNET_USE_TENSORRT);
+    feature_bits.set(CUTENSOR, MXNET_USE_CUTENSOR);
 
     // Check flags for example with gcc -msse3 -mavx2 -dM -E - < /dev/null | egrep "SSE|AVX"
 #if __SSE__
@@ -78,13 +76,12 @@ class FeatureSet {
     feature_bits.set(BLAS_MKL, MXNET_USE_BLAS_MKL);
     feature_bits.set(BLAS_APPLE, MXNET_USE_BLAS_APPLE);
     feature_bits.set(LAPACK, MXNET_USE_LAPACK);
-    feature_bits.set(MKLDNN, MXNET_USE_MKLDNN);
+    feature_bits.set(ONEDNN, MXNET_USE_ONEDNN);
 
     // Image
     feature_bits.set(OPENCV, MXNET_USE_OPENCV);
 
     // Misc
-    feature_bits.set(CAFFE, MXNET_USE_CAFFE);
     feature_bits.set(DIST_KVSTORE, MXNET_USE_DIST_KVSTORE);
     feature_bits.set(INT64_TENSOR_SIZE, MXNET_USE_INT64_TENSOR_SIZE);
     feature_bits.set(SIGNAL_HANDLER, MXNET_USE_SIGNAL_HANDLER);
@@ -116,53 +113,50 @@ bool is_enabled(const unsigned feat) {
 }
 
 LibInfo::LibInfo() {
-    for (size_t i = 0; i < MAX_FEATURES; ++i) {
-        m_lib_features[i].name = EnumNames::names[i].c_str();
-        m_lib_features[i].enabled = is_enabled(i);
-    }
+  for (size_t i = 0; i < MAX_FEATURES; ++i) {
+    m_lib_features[i].name    = EnumNames::names[i].c_str();
+    m_lib_features[i].enabled = is_enabled(i);
+  }
 }
 
-LibInfo *LibInfo::getInstance() {
-    if (!m_inst)
-        m_inst = std::make_unique<LibInfo>();
-    return m_inst.get();
+LibInfo* LibInfo::getInstance() {
+  if (!m_inst)
+    m_inst = std::make_unique<LibInfo>();
+  return m_inst.get();
 }
 
 std::unique_ptr<LibInfo> LibInfo::m_inst = nullptr;
 
 const std::vector<std::string> EnumNames::names = {
-  "CUDA",
-  "CUDNN",
-  "NCCL",
-  "CUDA_RTC",
-  "TENSORRT",
-  "CPU_SSE",
-  "CPU_SSE2",
-  "CPU_SSE3",
-  "CPU_SSE4_1",
-  "CPU_SSE4_2",
-  "CPU_SSE4A",
-  "CPU_AVX",
-  "CPU_AVX2",
-  "OPENMP",
-  "SSE",
-  "F16C",
-  "JEMALLOC",
-  "BLAS_OPEN",
-  "BLAS_ATLAS",
-  "BLAS_MKL",
-  "BLAS_APPLE",
-  "LAPACK",
-  "MKLDNN",
-  "OPENCV",
-  "CAFFE",
-  "PROFILER",
-  "DIST_KVSTORE",
-  "CXX14",
-  "INT64_TENSOR_SIZE",
-  "SIGNAL_HANDLER",
-  "DEBUG",
-  "TVM_OP",
+    "CUDA",
+    "CUDNN",
+    "NCCL",
+    "TENSORRT",
+    "CUTENSOR",
+    "CPU_SSE",
+    "CPU_SSE2",
+    "CPU_SSE3",
+    "CPU_SSE4_1",
+    "CPU_SSE4_2",
+    "CPU_SSE4A",
+    "CPU_AVX",
+    "CPU_AVX2",
+    "OPENMP",
+    "SSE",
+    "F16C",
+    "JEMALLOC",
+    "BLAS_OPEN",
+    "BLAS_ATLAS",
+    "BLAS_MKL",
+    "BLAS_APPLE",
+    "LAPACK",
+    "ONEDNN",
+    "OPENCV",
+    "DIST_KVSTORE",
+    "INT64_TENSOR_SIZE",
+    "SIGNAL_HANDLER",
+    "DEBUG",
+    "TVM_OP",
 };
 
 }  // namespace features

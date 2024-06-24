@@ -1,5 +1,23 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *   http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
 /*!
- *  Copyright (c) 2014 by Contributors
  * \file tensor_gpu-inl.cuh
  * \brief implementation of GPU code using CUDA
  * \author Bing Xu, Tianqi Chen
@@ -16,7 +34,7 @@
 #define MSHADOW_CUDA_POST_KERNEL_CHECK(x) \
   /* Code block avoids redefinition of cudaError_t err */ \
   do { \
-    cudaError err = cudaPeekAtLastError(); \
+    cudaError err = cudaGetLastError(); \
     CHECK_EQ(err, cudaSuccess) << "Name: " << #x << " ErrStr:" << cudaGetErrorString(err); \
   } while (0)
 namespace mshadow {
@@ -596,7 +614,8 @@ inline void SoftmaxGrad(const Tensor<gpu, 3, DType> &dst,
   MSHADOW_CUDA_POST_KERNEL_CHECK(Softmax3DGradKernel);
 }
 
-template<int x_bits, typename DType, typename DstPlan, typename SrcPlan1, typename SrcPlan2>
+template<bool clip, int x_bits, typename DType, typename DstPlan,
+         typename SrcPlan1, typename SrcPlan2>
 __global__ void AddTakeGradKernel(DstPlan dst,
                                   SrcPlan1 index, SrcPlan2 src,
                                   index_t ymax, index_t xmax, const int K) {
@@ -606,12 +625,54 @@ __global__ void AddTakeGradKernel(DstPlan dst,
   for (unsigned y = 0; y < ymax; ++y) {
     if (threadIdx.x == 0) {
       ptr = index.Eval(0, y);
-      if (ptr <= 0) ptr = 0;
-      else if (ptr >= K) ptr = K - 1;
+      if (clip) {
+        if (ptr <= 0) ptr = 0;
+        else if (ptr >= K) ptr = K - 1;
+      } else {
+        ptr %= K;
+        if (ptr < 0) ptr += K;
+      }
     }
     __syncthreads();
     if (xindex < xmax) {
       dst.REval(ptr, xindex) += src.Eval(y, xindex);
+    }
+  }
+}
+
+template<bool clip, int x_bits, typename DstPlan, typename ATypePlan,
+         typename SrcPlan1, typename SrcPlan2>
+__global__ void AddTakeGradKernel(DstPlan dst,
+                                  ATypePlan temp,
+                                  SrcPlan1 index, SrcPlan2 src,
+                                  index_t ymax, index_t xmax, const int K) {
+  const unsigned x_size = 1 << x_bits;
+  const int xindex = blockIdx.x * x_size + threadIdx.x;
+  __shared__ int ptr;
+  if (xindex < xmax) {
+    for (unsigned y = 0; y < K; ++y) {
+      temp.REval(y, xindex) = dst.Eval(y, xindex);
+    }
+  }
+  for (unsigned y = 0; y < ymax; ++y) {
+    if (threadIdx.x == 0) {
+      ptr = index.Eval(0, y);
+      if (clip) {
+        if (ptr <= 0) ptr = 0;
+        else if (ptr >= K) ptr = K - 1;
+      } else {
+        ptr %= K;
+        if (ptr < 0) ptr += K;
+      }
+    }
+    __syncthreads();
+    if (xindex < xmax) {
+      temp.REval(ptr, xindex) += src.Eval(y, xindex);
+    }
+  }
+  if (xindex < xmax) {
+    for (unsigned y = 0; y < K; ++y) {
+      dst.REval(y, xindex) = temp.Eval(y, xindex);
     }
   }
 }
@@ -671,7 +732,7 @@ __global__ void AddTakeGradLargeBatchKernel(DType* dst,
   }
 }
 
-template<typename IndexType, typename DType>
+template<bool clip = true, typename IndexType, typename DType>
 inline void AddTakeGrad(Tensor<gpu, 2, DType> dst,
                         const Tensor<gpu, 1, IndexType>& index,
                         const Tensor<gpu, 2, DType> &src) {
@@ -688,13 +749,63 @@ inline void AddTakeGrad(Tensor<gpu, 2, DType> dst,
   cudaStream_t stream = Stream<gpu>::GetStream(dst.stream_);
   const int K = dst.shape_[0];
 
-  AddTakeGradKernel<kUnitBits, DType>
+  if (clip) {
+    AddTakeGradKernel<true, kUnitBits, DType>
       <<<dimGrid, dimBlock, 0, stream>>>
       (expr::MakePlan(dst),
        expr::MakePlan(index),
        expr::MakePlan(src),
        src.size(0),
        src.size(1), K);
+  } else {
+    AddTakeGradKernel<false, kUnitBits, DType>
+      <<<dimGrid, dimBlock, 0, stream>>>
+      (expr::MakePlan(dst),
+       expr::MakePlan(index),
+       expr::MakePlan(src),
+       src.size(0),
+       src.size(1), K);
+  }
+  MSHADOW_CUDA_POST_KERNEL_CHECK(AddTakeGradKernel);
+}
+
+template<bool clip = true, typename IndexType, typename DType, typename AType>
+inline void AddTakeGrad(Tensor<gpu, 2, DType> dst,
+                        Tensor<gpu, 2, AType> temp,
+                        const Tensor<gpu, 1, IndexType>& index,
+                        const Tensor<gpu, 2, DType> &src) {
+  CHECK_EQ(dst.CheckContiguous(), true);
+  CHECK_EQ(index.CheckContiguous(), true);
+  CHECK_EQ(src.CheckContiguous(), true);
+  const int kUnitBits = kMemUnitBits + 1;
+  dim3 dimBlock(1 << kUnitBits);
+  dim3 dimGrid((dst.size(1) + (1 << kUnitBits) - 1) >> kUnitBits);
+
+  CHECK_EQ(dst.size(1), src.size(1)) << "AddTakeGrad: shape mismatch";
+  CHECK_EQ(index.size(0), src.size(0)) << "AddTakeGrad: shape mismatch";
+  CheckLaunchParam(dimGrid, dimBlock, "AddTakeGrad");
+  cudaStream_t stream = Stream<gpu>::GetStream(dst.stream_);
+  const int K = dst.shape_[0];
+
+  if (clip) {
+    AddTakeGradKernel<true, kUnitBits>
+      <<<dimGrid, dimBlock, 0, stream>>>
+      (expr::MakePlan(dst),
+       expr::MakePlan(temp),
+       expr::MakePlan(index),
+       expr::MakePlan(src),
+       src.size(0),
+       src.size(1), K);
+  } else {
+    AddTakeGradKernel<false, kUnitBits>
+      <<<dimGrid, dimBlock, 0, stream>>>
+      (expr::MakePlan(dst),
+       expr::MakePlan(temp),
+       expr::MakePlan(index),
+       expr::MakePlan(src),
+       src.size(0),
+       src.size(1), K);
+  }
   MSHADOW_CUDA_POST_KERNEL_CHECK(AddTakeGradKernel);
 }
 

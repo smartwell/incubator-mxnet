@@ -18,7 +18,6 @@
  */
 
 /*!
- * Copyright (c) 2018 by Contributors
  * \file libinfo.h
  * \author larroy
  * \brief get features of the MXNet library at runtime
@@ -55,6 +54,14 @@
 #define MXNET_USE_CUDNN MSHADOW_USE_CUDNN
 #endif
 
+#ifndef MXNET_USE_CUTENSOR
+#define MXNET_USE_CUTENSOR MSHADOW_USE_CUTENSOR
+#endif
+
+#ifndef MXNET_USE_NVML
+#define MXNET_USE_NVML 0
+#endif
+
 #ifndef MXNET_USE_NCCL
 #define MXNET_USE_NCCL 0
 #endif
@@ -66,18 +73,12 @@
 #define MXNET_USE_CUSOLVER MSHADOW_USE_CUSOLVER
 #endif
 
-#ifndef MXNET_ENABLE_CUDA_RTC
-#define MXNET_ENABLE_CUDA_RTC 0
-#endif
-
 /*! \brief Error message for using gpu when MXNET_USE_CUDA==0 */
-#define MXNET_GPU_NOT_ENABLED_ERROR  "GPU is not enabled"
-
+#define MXNET_GPU_NOT_ENABLED_ERROR "GPU is not enabled"
 
 #ifndef MXNET_USE_TENSORRT
 #define MXNET_USE_TENSORRT 0
 #endif
-
 
 #ifndef MXNET_USE_BLAS_ATLAS
 #define MXNET_USE_BLAS_ATLAS 0
@@ -99,8 +100,8 @@
 #define MXNET_USE_LAPACK 0
 #endif
 
-#ifndef MXNET_USE_MKLDNN
-#define MXNET_USE_MKLDNN 0
+#ifndef MXNET_USE_ONEDNN
+#define MXNET_USE_ONEDNN 0
 #endif
 
 #ifndef MXNET_USE_OPENMP
@@ -109,10 +110,6 @@
 
 #ifndef MXNET_USE_F16C
 #define MXNET_USE_F16C MSHADOW_USE_F16C
-#endif
-
-#ifndef MXNET_USE_CAFFE
-#define MXNET_USE_CAFFE 0
 #endif
 
 #ifndef MXNET_USE_DIST_KVSTORE
@@ -142,8 +139,8 @@ enum : unsigned {
   CUDA = 0,
   CUDNN,
   NCCL,
-  CUDA_RTC,
   TENSORRT,
+  CUTENSOR,
 
   // CPU Features / optimizations
   CPU_SSE,
@@ -154,7 +151,6 @@ enum : unsigned {
   CPU_SSE4A,  // AMD extensions to SSE4
   CPU_AVX,
   CPU_AVX2,
-
 
   // Multiprocessing / CPU / System
   OPENMP,
@@ -172,17 +168,14 @@ enum : unsigned {
   // Other math libraries:
   // Linear Algebra PACKage
   LAPACK,
-  // Intel(R) Math Kernel Library for Deep Neural Networks
-  MKLDNN,
+  // oneAPI Deep Neural Network Library (oneDNN)
+  ONEDNN,
 
   // Image processing
   OPENCV,
 
   // Misc
-  CAFFE,
-  PROFILER,
   DIST_KVSTORE,
-  CXX14,
   INT64_TENSOR_SIZE,
 
   // Signal handler to print stack traces on exceptions
@@ -196,7 +189,6 @@ enum : unsigned {
   MAX_FEATURES
 };
 
-
 struct EnumNames {
   static const std::vector<std::string> names;
 };
@@ -207,9 +199,10 @@ struct LibInfo {
   const std::array<LibFeature, MAX_FEATURES>& getFeatures() {
     return m_lib_features;
   }
+
  private:
   std::array<LibFeature, MAX_FEATURES> m_lib_features;
-  static std::unique_ptr<LibInfo>  m_inst;
+  static std::unique_ptr<LibInfo> m_inst;
 };
 
 /*!

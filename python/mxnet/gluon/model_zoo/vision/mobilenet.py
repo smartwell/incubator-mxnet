@@ -28,20 +28,22 @@ __modified_date__ = '18/04/18'
 import os
 
 from ... import nn
-from ....context import cpu
+from ....device import cpu
 from ...block import HybridBlock
-from .... import base
+from .... import base, np
+from ....util import use_np, wrap_ctx_to_device_func
 
 
 # Helpers
+@use_np
 class RELU6(nn.HybridBlock):
     """Relu6 used in MobileNetV2."""
 
     def __init__(self, **kwargs):
         super(RELU6, self).__init__(**kwargs)
 
-    def hybrid_forward(self, F, x):
-        return F.clip(x, 0, 6, name="relu6")
+    def forward(self, x):
+        return np.clip(x, 0, 6)
 
 
 # pylint: disable= too-many-arguments
@@ -59,6 +61,7 @@ def _add_conv_dw(out, dw_channels, channels, stride, relu6=False):
     _add_conv(out, channels=channels, relu6=relu6)
 
 
+@use_np
 class LinearBottleneck(nn.HybridBlock):
     r"""LinearBottleneck used in MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
@@ -80,22 +83,22 @@ class LinearBottleneck(nn.HybridBlock):
     def __init__(self, in_channels, channels, t, stride, **kwargs):
         super(LinearBottleneck, self).__init__(**kwargs)
         self.use_shortcut = stride == 1 and in_channels == channels
-        with self.name_scope():
-            self.out = nn.HybridSequential()
+        self.out = nn.HybridSequential()
 
-            _add_conv(self.out, in_channels * t, relu6=True)
-            _add_conv(self.out, in_channels * t, kernel=3, stride=stride,
-                      pad=1, num_group=in_channels * t, relu6=True)
-            _add_conv(self.out, channels, active=False, relu6=True)
+        _add_conv(self.out, in_channels * t, relu6=True)
+        _add_conv(self.out, in_channels * t, kernel=3, stride=stride,
+                  pad=1, num_group=in_channels * t, relu6=True)
+        _add_conv(self.out, channels, active=False, relu6=True)
 
-    def hybrid_forward(self, F, x):
+    def forward(self, x):
         out = self.out(x)
         if self.use_shortcut:
-            out = F.elemwise_add(out, x)
+            out = np.add(out, x)
         return out
 
 
 # Net
+@use_np
 class MobileNet(HybridBlock):
     r"""MobileNet model from the
     `"MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications"
@@ -113,28 +116,27 @@ class MobileNet(HybridBlock):
 
     def __init__(self, multiplier=1.0, classes=1000, **kwargs):
         super(MobileNet, self).__init__(**kwargs)
-        with self.name_scope():
-            self.features = nn.HybridSequential(prefix='')
-            with self.features.name_scope():
-                _add_conv(self.features, channels=int(32 * multiplier), kernel=3, pad=1, stride=2)
-                dw_channels = [int(x * multiplier) for x in [32, 64] + [128] * 2
-                               + [256] * 2 + [512] * 6 + [1024]]
-                channels = [int(x * multiplier) for x in [64] + [128] * 2 + [256] * 2
-                            + [512] * 6 + [1024] * 2]
-                strides = [1, 2] * 3 + [1] * 5 + [2, 1]
-                for dwc, c, s in zip(dw_channels, channels, strides):
-                    _add_conv_dw(self.features, dw_channels=dwc, channels=c, stride=s)
-                self.features.add(nn.GlobalAvgPool2D())
-                self.features.add(nn.Flatten())
+        self.features = nn.HybridSequential()
+        _add_conv(self.features, channels=int(32 * multiplier), kernel=3, pad=1, stride=2)
+        dw_channels = [int(x * multiplier) for x in [32, 64] + [128] * 2
+                       + [256] * 2 + [512] * 6 + [1024]]
+        channels = [int(x * multiplier) for x in [64] + [128] * 2 + [256] * 2
+                    + [512] * 6 + [1024] * 2]
+        strides = [1, 2] * 3 + [1] * 5 + [2, 1]
+        for dwc, c, s in zip(dw_channels, channels, strides):
+            _add_conv_dw(self.features, dw_channels=dwc, channels=c, stride=s)
+        self.features.add(nn.GlobalAvgPool2D())
+        self.features.add(nn.Flatten())
 
-            self.output = nn.Dense(classes)
+        self.output = nn.Dense(classes)
 
-    def hybrid_forward(self, F, x):
+    def forward(self, x):
         x = self.features(x)
         x = self.output(x)
         return x
 
 
+@use_np
 class MobileNetV2(nn.HybridBlock):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
@@ -152,43 +154,41 @@ class MobileNetV2(nn.HybridBlock):
 
     def __init__(self, multiplier=1.0, classes=1000, **kwargs):
         super(MobileNetV2, self).__init__(**kwargs)
-        with self.name_scope():
-            self.features = nn.HybridSequential(prefix='features_')
-            with self.features.name_scope():
-                _add_conv(self.features, int(32 * multiplier), kernel=3,
-                          stride=2, pad=1, relu6=True)
+        self.features = nn.HybridSequential()
+        _add_conv(self.features, int(32 * multiplier), kernel=3,
+                  stride=2, pad=1, relu6=True)
 
-                in_channels_group = [int(x * multiplier) for x in [32] + [16] + [24] * 2
-                                     + [32] * 3 + [64] * 4 + [96] * 3 + [160] * 3]
-                channels_group = [int(x * multiplier) for x in [16] + [24] * 2 + [32] * 3
-                                  + [64] * 4 + [96] * 3 + [160] * 3 + [320]]
-                ts = [1] + [6] * 16
-                strides = [1, 2] * 2 + [1, 1, 2] + [1] * 6 + [2] + [1] * 3
+        in_channels_group = [int(x * multiplier) for x in [32] + [16] + [24] * 2
+                             + [32] * 3 + [64] * 4 + [96] * 3 + [160] * 3]
+        channels_group = [int(x * multiplier) for x in [16] + [24] * 2 + [32] * 3
+                          + [64] * 4 + [96] * 3 + [160] * 3 + [320]]
+        ts = [1] + [6] * 16
+        strides = [1, 2] * 2 + [1, 1, 2] + [1] * 6 + [2] + [1] * 3
 
-                for in_c, c, t, s in zip(in_channels_group, channels_group, ts, strides):
-                    self.features.add(LinearBottleneck(in_channels=in_c, channels=c,
-                                                       t=t, stride=s))
+        for in_c, c, t, s in zip(in_channels_group, channels_group, ts, strides):
+            self.features.add(LinearBottleneck(in_channels=in_c, channels=c,
+                                               t=t, stride=s))
 
-                last_channels = int(1280 * multiplier) if multiplier > 1.0 else 1280
-                _add_conv(self.features, last_channels, relu6=True)
+        last_channels = int(1280 * multiplier) if multiplier > 1.0 else 1280
+        _add_conv(self.features, last_channels, relu6=True)
 
-                self.features.add(nn.GlobalAvgPool2D())
+        self.features.add(nn.GlobalAvgPool2D())
 
-            self.output = nn.HybridSequential(prefix='output_')
-            with self.output.name_scope():
-                self.output.add(
-                    nn.Conv2D(classes, 1, use_bias=False, prefix='pred_'),
-                    nn.Flatten()
-                )
+        self.output = nn.HybridSequential()
+        self.output.add(
+            nn.Conv2D(classes, 1, use_bias=False),
+            nn.Flatten()
+        )
 
-    def hybrid_forward(self, F, x):
+    def forward(self, x):
         x = self.features(x)
         x = self.output(x)
         return x
 
 
 # Constructor
-def get_mobilenet(multiplier, pretrained=False, ctx=cpu(),
+@wrap_ctx_to_device_func
+def get_mobilenet(multiplier, pretrained=False, device=cpu(),
                   root=os.path.join(base.data_dir(), 'models'), **kwargs):
     r"""MobileNet model from the
     `"MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications"
@@ -202,8 +202,8 @@ def get_mobilenet(multiplier, pretrained=False, ctx=cpu(),
         channel size multiplied by this multiplier.
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     root : str, default $MXNET_HOME/models
         Location for keeping the model parameters.
     """
@@ -215,11 +215,12 @@ def get_mobilenet(multiplier, pretrained=False, ctx=cpu(),
         if version_suffix in ('1.00', '0.50'):
             version_suffix = version_suffix[:-1]
         net.load_parameters(
-            get_model_file('mobilenet%s' % version_suffix, root=root), ctx=ctx)
+            get_model_file(f'mobilenet{version_suffix}', root=root), device=device)
     return net
 
 
-def get_mobilenet_v2(multiplier, pretrained=False, ctx=cpu(),
+@wrap_ctx_to_device_func
+def get_mobilenet_v2(multiplier, pretrained=False, device=cpu(),
                      root=os.path.join(base.data_dir(), 'models'), **kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
@@ -234,8 +235,8 @@ def get_mobilenet_v2(multiplier, pretrained=False, ctx=cpu(),
         channel size multiplied by this multiplier.
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     root : str, default $MXNET_HOME/models
         Location for keeping the model parameters.
     """
@@ -247,10 +248,11 @@ def get_mobilenet_v2(multiplier, pretrained=False, ctx=cpu(),
         if version_suffix in ('1.00', '0.50'):
             version_suffix = version_suffix[:-1]
         net.load_parameters(
-            get_model_file('mobilenetv2_%s' % version_suffix, root=root), ctx=ctx)
+            get_model_file(f'mobilenetv2_{version_suffix}', root=root), device=device)
     return net
 
 
+@wrap_ctx_to_device_func
 def mobilenet1_0(**kwargs):
     r"""MobileNet model from the
     `"MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications"
@@ -260,12 +262,13 @@ def mobilenet1_0(**kwargs):
     ----------
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     """
     return get_mobilenet(1.0, **kwargs)
 
 
+@wrap_ctx_to_device_func
 def mobilenet_v2_1_0(**kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
@@ -276,12 +279,13 @@ def mobilenet_v2_1_0(**kwargs):
     ----------
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     """
     return get_mobilenet_v2(1.0, **kwargs)
 
 
+@wrap_ctx_to_device_func
 def mobilenet0_75(**kwargs):
     r"""MobileNet model from the
     `"MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications"
@@ -291,12 +295,13 @@ def mobilenet0_75(**kwargs):
     ----------
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     """
     return get_mobilenet(0.75, **kwargs)
 
 
+@wrap_ctx_to_device_func
 def mobilenet_v2_0_75(**kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
@@ -307,12 +312,13 @@ def mobilenet_v2_0_75(**kwargs):
     ----------
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     """
     return get_mobilenet_v2(0.75, **kwargs)
 
 
+@wrap_ctx_to_device_func
 def mobilenet0_5(**kwargs):
     r"""MobileNet model from the
     `"MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications"
@@ -322,12 +328,13 @@ def mobilenet0_5(**kwargs):
     ----------
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     """
     return get_mobilenet(0.5, **kwargs)
 
 
+@wrap_ctx_to_device_func
 def mobilenet_v2_0_5(**kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
@@ -338,12 +345,13 @@ def mobilenet_v2_0_5(**kwargs):
     ----------
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     """
     return get_mobilenet_v2(0.5, **kwargs)
 
 
+@wrap_ctx_to_device_func
 def mobilenet0_25(**kwargs):
     r"""MobileNet model from the
     `"MobileNets: Efficient Convolutional Neural Networks for Mobile Vision Applications"
@@ -353,12 +361,13 @@ def mobilenet0_25(**kwargs):
     ----------
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     """
     return get_mobilenet(0.25, **kwargs)
 
 
+@wrap_ctx_to_device_func
 def mobilenet_v2_0_25(**kwargs):
     r"""MobileNetV2 model from the
     `"Inverted Residuals and Linear Bottlenecks:
@@ -369,7 +378,7 @@ def mobilenet_v2_0_25(**kwargs):
     ----------
     pretrained : bool, default False
         Whether to load the pretrained weights for model.
-    ctx : Context, default CPU
-        The context in which to load the pretrained weights.
+    device : Device, default CPU
+        The device in which to load the pretrained weights.
     """
     return get_mobilenet_v2(0.25, **kwargs)

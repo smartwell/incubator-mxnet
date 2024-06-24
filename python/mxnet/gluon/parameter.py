@@ -18,22 +18,22 @@
 # coding: utf-8
 # pylint: disable=unnecessary-pass, too-many-lines
 """Neural network parameter."""
-from __future__ import absolute_import
 
 __all__ = ['DeferredInitializationError', 'Parameter', 'Constant',
-           'ParameterDict', 'tensor_types']
+           'tensor_types']
 
 
-from collections import OrderedDict
+import uuid
 import warnings
+import weakref
 import numpy as np
 
 from ..base import mx_real_t, MXNetError
-from .. import symbol, ndarray, initializer, context
-from ..context import Context, cpu
+from .. import symbol, ndarray, initializer, device as _device, _deferred_compute as dc
+from ..device import Device, cpu
 from .. import autograd
-from .utils import _indent, _brief_print_list, shape_is_known
-from ..util import is_np_shape, is_np_array
+from .utils import shape_is_known
+from ..util import is_np_shape, is_np_array, wrap_ctx_to_device_func
 from .. import numpy as _mx_np  # pylint: disable=reimported
 
 # pylint: disable= invalid-name
@@ -47,22 +47,22 @@ class DeferredInitializationError(MXNetError):
 class Parameter(object):
     """A Container holding parameters (weights) of Blocks.
 
-    :py:class:`Parameter` holds a copy of the parameter on each :py:class:`Context` after
+    :py:class:`Parameter` holds a copy of the parameter on each :py:class:`Device` after
     it is initialized with ``Parameter.initialize(...)``. If :py:attr:`grad_req` is
-    not ``'null'``, it will also hold a gradient array on each :py:class:`Context`::
+    not ``'null'``, it will also hold a gradient array on each :py:class:`Device`::
 
-        ctx = mx.gpu(0)
-        x = mx.nd.zeros((16, 100), ctx=ctx)
+        device = mx.gpu(0)
+        x = mx.np.zeros((16, 100), device=device)
         w = mx.gluon.Parameter('fc_weight', shape=(64, 100), init=mx.init.Xavier())
         b = mx.gluon.Parameter('fc_bias', shape=(64,), init=mx.init.Zero())
-        w.initialize(ctx=ctx)
-        b.initialize(ctx=ctx)
-        out = mx.nd.FullyConnected(x, w.data(ctx), b.data(ctx), num_hidden=64)
+        w.initialize(device=device)
+        b.initialize(device=device)
+        out = mx.npx.fully_connected(x, w.data(device), b.data(device), num_hidden=64)
 
     Parameters
     ----------
-    name : str
-        Name of this parameter.
+    name : str, default 'weight'
+        Name of this parameter. It decides the corresponding default initializer.
     grad_req : {'write', 'add', 'null'}, default 'write'
         Specifies how to update gradient to grad arrays.
 
@@ -103,14 +103,16 @@ class Parameter(object):
     wd_mult : float
         Local weight decay multiplier for this Parameter.
     """
-    def __init__(self, name, grad_req='write', shape=None, dtype=mx_real_t,
+    def __init__(self, name='weight', grad_req='write', shape=None, dtype=mx_real_t,
                  lr_mult=1.0, wd_mult=1.0, init=None, allow_deferred_init=False,
                  differentiable=True, stype='default', grad_stype='default'):
         self._var = None
+        self._uuid = str(uuid.uuid4())
+        self._var_name = None
         self._data = None
         self._grad = None
-        self._ctx_list = None
-        self._ctx_map = None
+        self._device_list = None
+        self._device_map = None
         self._trainer = None
         self._deferred_init = ()
         self._differentiable = differentiable
@@ -119,7 +121,7 @@ class Parameter(object):
         if isinstance(shape, int):
             shape = (shape,)
         self._shape = shape
-        self.name = name
+        self._name = name
         self._dtype = dtype
         self.lr_mult = lr_mult
         self.wd_mult = wd_mult
@@ -127,25 +129,29 @@ class Parameter(object):
         self.init = init
         # sparse related storage type information
         valid_stypes = ['default', 'row_sparse', 'csr']
-        assert grad_stype in valid_stypes, "grad_stype for Parameter '%s' must be " \
-            "one of 'default', 'row_sparse', or 'csr', but got '%s'" % (name, grad_stype)
-        assert stype in valid_stypes, "stype for Parameter '%s' must be " \
-            "one of 'default', 'row_sparse', or 'csr', but got '%s'" % (name, stype)
+        assert grad_stype in valid_stypes, "grad_stype for Parameter must be " \
+            f"one of 'default', 'row_sparse', or 'csr', but got '{grad_stype}'"
+        assert stype in valid_stypes, "stype for Parameter must be " \
+            f"one of 'default', 'row_sparse', or 'csr', but got '{stype}'"
         self._grad_stype = grad_stype
         self._stype = stype
 
     def __repr__(self):
-        s = 'Parameter {name} (shape={shape}, dtype={dtype})'
-        return s.format(name=self.name, shape=self.shape, dtype=self.dtype)
+        s = 'Parameter (shape={shape}, dtype={dtype})'
+        return s.format(shape=self.shape, dtype=self.dtype)
 
     @property
     def grad_req(self):
         return self._grad_req
 
+    @property
+    def name(self):
+        return self._name
+
     @grad_req.setter
     def grad_req(self, req):
         assert req in ['write', 'add', 'null'], \
-            "grad_req must be one of 'write', 'add', or 'null', but got '%s'"%req
+            f"grad_req must be one of 'write', 'add', or 'null', but got '{req}'"
         if not self._differentiable:
             req = 'null'
         if self._grad_req == req:
@@ -194,76 +200,80 @@ class Parameter(object):
 
         assert len(self._shape) == len(new_shape) and \
             all(j in (-1, 0, i) for i, j in zip(new_shape, self._shape)), \
-            "Expected shape %s is incompatible with given shape %s."%(
-                str(new_shape), str(self._shape))  # -1 means unknown dim size in np_shape mode
+            f"Expected shape {str(new_shape)} is incompatible with given shape {str(self._shape)} for Parameter {str(self.name)}." 
+            # -1 means unknown dim size in np_shape mode
 
         self._shape = new_shape
 
     def _set_trainer(self, trainer):
         """ Set the trainer this parameter is associated with. """
         # trainer cannot be replaced for sparse params
-        if self._stype != 'default' and self._trainer and trainer and self._trainer is not trainer:
+        if self._stype != 'default' and self._trainer and trainer and self._trainer() is not trainer:
             raise RuntimeError(
-                "Failed to set the trainer for Parameter '%s' because it was already set. " \
-                "More than one trainers for a %s Parameter is not supported." \
-                %(self.name, self._stype))
-        self._trainer = trainer
+                f"Failed to set the trainer for Parameter '{self.name}' because it was already set. " \
+                f"More than one trainers for a {self._stype} Parameter is not supported.")
+        if trainer is not None:
+            self._trainer = weakref.ref(trainer)
+        else:
+            self._trainer = trainer
 
-    def _check_and_get(self, arr_list, ctx):
+    def _check_and_get(self, arr_list, device):
         if arr_list is not None:
-            if ctx is list:
+            if device is list:
                 return arr_list
-            if ctx is None:
+            if device is None:
                 if len(arr_list) == 1:
                     return arr_list[0]
                 else:
-                    ctx = context.current_context()
-            ctx_list = self._ctx_map[ctx.device_typeid&1]
-            if ctx.device_id < len(ctx_list):
-                idx = ctx_list[ctx.device_id]
+                    device = _device.current_device()
+            device_list = self._device_map[device.device_typeid&1]
+            if device.device_id < len(device_list):
+                idx = device_list[device.device_id]
                 if idx is not None:
                     return arr_list[idx]
             raise RuntimeError(
-                "Parameter '%s' was not initialized on context %s. "
-                "It was only initialized on %s."%(
-                    self.name, str(ctx), str(self._ctx_list)))
+                f"Parameter '{self.name}' was not initialized on device {str(device)}. "
+                f"It was only initialized on {str(self._device_list)}.")
         if self._deferred_init:
             raise DeferredInitializationError(
-                "Parameter '%s' has not been initialized yet because initialization was " \
+                f"Parameter '{self.name}' has not been initialized yet because initialization was " \
                 "deferred. Actual initialization happens during the first forward pass. " \
                 "Please pass one batch of data through the network before accessing Parameters. " \
                 "You can also avoid deferred initialization by specifying in_units, " \
-                "num_features, etc., for network layers."%(self.name))
+                "num_features, etc., for network layers.")
         raise RuntimeError(
-            "Parameter '%s' has not been initialized. Note that " \
+            f"Parameter '{self.name}' has not been initialized. Note that " \
             "you should initialize parameters and create Trainer " \
             "with Block.collect_params() instead of Block.params " \
             "because the later does not include Parameters of " \
-            "nested child Blocks"%(self.name))
+            "nested child Blocks")
 
-    def _get_row_sparse(self, arr_list, ctx, row_id):
+    @wrap_ctx_to_device_func
+    def _get_row_sparse(self, arr_list, device, row_id):
         """ Get row_sparse data from row_sparse parameters based on row_id. """
         # get row sparse params based on row ids
         if not isinstance(row_id, ndarray.NDArray):
-            raise TypeError("row_id must have NDArray type, but %s is given"%(type(row_id)))
-        if not self._trainer:
-            raise RuntimeError("Cannot get row_sparse data for Parameter '%s' when no " \
-                               "Trainer is created with it."%self.name)
-        results = self._check_and_get(arr_list, ctx)
+            raise TypeError(f"row_id must have NDArray type, but {type(row_id)} is given")
+        trainer = self._trainer() if self._trainer else None
+        if not trainer:
+            raise RuntimeError(f"Cannot get row_sparse data for Parameter '{self.name}' when no " \
+                               "Trainer is created with it.")
+        results = self._check_and_get(arr_list, device)
 
         # fetch row sparse params from the trainer
-        self._trainer._row_sparse_pull(self, results, row_id)
+        trainer._row_sparse_pull(self, results, row_id)
         return results
 
-    def _load_init(self, data, ctx, cast_dtype=False, dtype_source='current'):
+    @wrap_ctx_to_device_func
+    def _load_init(self, data, device, cast_dtype=False, dtype_source='current'):
         """
         (Re)initializes by loading from data.
         Parameters
         ----------
         data : NDArray
             The data to load
-        ctx : Context or list of Context
-            Context(s) initialize loaded parameters on.
+        device : Device or list of Device
+            Device(s) initialize loaded parameters on.
         cast_dtype : bool, default False
             Cast the data type of the parameter
         dtype_source : str, default 'current'
@@ -277,42 +287,38 @@ class Parameter(object):
             unknown_dim_size = -1 if is_np_shape() else 0
             for self_dim, data_dim in zip(self.shape, data.shape):
                 assert self_dim in (unknown_dim_size, data_dim), \
-                    "Failed loading Parameter '%s' from saved params: " \
-                    "shape incompatible expected %s vs saved %s"%(
-                        self.name, str(self.shape), str(data.shape))
+                    f"Failed loading Parameter '{self.name}' from saved params: " \
+                    f"shape incompatible expected {str(self.shape)} vs saved {str(data.shape)}"
             self.shape = tuple(i if i != unknown_dim_size else j
                                for i, j in zip(self.shape, data.shape))
         if self.dtype:
-            if cast_dtype and np.dtype(self.dtype).type != data.dtype:
+            if cast_dtype and self.dtype != data.dtype:
                 if dtype_source == 'current':
                     data = data.astype(self.dtype, copy=False)
                 elif dtype_source == 'saved':
                     self.dtype = data.dtype
             else:
-                assert np.dtype(self.dtype).type == data.dtype, \
-                "Failed loading Parameter '%s' from saved params: " \
-                "dtype incompatible expected %s vs saved %s. " \
-                "Set cast_dtype=True to cast the dtype of saved params."%(
-                    self.name, str(self.dtype), str(data.dtype))
+                assert self.dtype == data.dtype, \
+                f"Failed loading Parameter '{self.name}' from saved params: " \
+                f"dtype incompatible expected {str(self.dtype)} vs saved {str(data.dtype)}. " \
+                "Set cast_dtype=True to cast the dtype of saved params."
         if self._stype != data.stype:
             data = data.tostype(self._stype)
-        if isinstance(ctx, Context):
-            ctx = [ctx]
+        if isinstance(device, Device):
+            device = [device]
         if self._data is None:
             if self._deferred_init:
-                assert ctx is None or set(ctx) == set(self._deferred_init[1]), \
-                    "Failed to load Parameter '%s' on %s because it was " \
-                    "previous initialized on %s."%(
-                        self.name, str(ctx), str(self.list_ctx()))
-                ctx = self._deferred_init[1]
-            elif ctx is None:
-                ctx = [cpu()]
-            self._init_impl(data, ctx)
+                assert device is None or set(device) == set(self._deferred_init[1]), \
+                    f"Failed to load Parameter '{self.name}' on {str(device)} because it was " \
+                    f"previous initialized on {str(self.list_device())}."
+                device = self._deferred_init[1]
+            elif device is None:
+                device = [cpu()]
+            self._init_impl(data, device)
         else:
-            assert ctx is None or set(ctx) == set(self.list_ctx()), \
-                "Failed to load Parameter '%s' on %s because it was " \
-                "previous initialized on %s."%(
-                    self.name, str(ctx), str(self.list_ctx()))
+            assert device is None or set(device) == set(self.list_device()), \
+                f"Failed to load Parameter '{self.name}' on {str(device)} because it was " \
+                f"previous initialized on {str(self.list_device())}."
             self.set_data(data)
         self._deferred_init = ()
 
@@ -320,43 +326,43 @@ class Parameter(object):
         """Finishes deferred initialization."""
         if not self._deferred_init:
             return
-        init, ctx, default_init, data = self._deferred_init
+        init, device, default_init, data = self._deferred_init
         self._deferred_init = ()
 
         assert shape_is_known(self.shape), \
-            "Cannot initialize Parameter '%s' because it has " \
-            "invalid shape: %s. Please specify in_units, " \
-            "in_channels, etc for `Block`s."%(
-                self.name, str(self.shape))
+            f"Cannot initialize Parameter '{self.name}' because it has " \
+            f"invalid shape: {str(self.shape)}. Please specify in_units, " \
+            "in_channels, etc for `Block`s."
 
-        with autograd.pause():
+        with autograd.pause(), dc.context(False):
             if data is None:
-                kwargs = {'shape': self.shape, 'dtype': self.dtype, 'ctx': context.cpu()}
                 if is_np_array():
+                    kwargs = {'shape': self.shape, 'dtype': self.dtype, 'device': cpu()}
                     if self._stype != 'default':
-                        raise ValueError("mxnet.numpy.zeros does not support stype = {}"
+                        raise ValueError("Currently stype {} is not supported in NumPy interface and Gluon2.0"
                                          .format(self._stype))
                     zeros_fn = _mx_np.zeros
                 else:
+                    kwargs = {'shape': self.shape, 'dtype': self.dtype, 'ctx': cpu()}
                     kwargs['stype'] = self._stype
                     zeros_fn = ndarray.zeros
                 data = zeros_fn(**kwargs)
                 initializer.create(default_init)(
                     initializer.InitDesc(self.name, {'__init__': init}), data)
 
-            self._init_impl(data, ctx)
+            self._init_impl(data, device)
 
-    def _init_impl(self, data, ctx_list):
+    def _init_impl(self, data, device_list):
         """Sets data and grad."""
-        self._ctx_list = list(ctx_list)
-        self._ctx_map = [[], []]
-        for i, ctx in enumerate(self._ctx_list):
-            dev_list = self._ctx_map[ctx.device_typeid&1]
-            while len(dev_list) <= ctx.device_id:
+        self._device_list = list(device_list)
+        self._device_map = [[], []]
+        for i, device in enumerate(self._device_list):
+            dev_list = self._device_map[device.device_typeid&1]
+            while len(dev_list) <= device.device_id:
                 dev_list.append(None)
-            dev_list[ctx.device_id] = i
+            dev_list[device.device_id] = i
 
-        self._data = [data.copyto(ctx) for ctx in self._ctx_list]
+        self._data = [data.copyto(device) for device in self._device_list]
         self._init_grad()
 
     def _init_grad(self):
@@ -367,9 +373,9 @@ class Parameter(object):
 
         if is_np_array():
             if self._grad_stype != 'default':
-                raise ValueError("mxnet.numpy.zeros does not support stype = {}"
+                raise ValueError("Currently stype {} is not supported in NumPy interface and Gluon2.0"
                                  .format(self._grad_stype))
-            self._grad = [_mx_np.zeros(shape=i.shape, dtype=i.dtype, ctx=i.context)
+            self._grad = [_mx_np.zeros(shape=i.shape, dtype=i.dtype, device=i.device)
                           for i in self._data]
         else:
             self._grad = [ndarray.zeros(shape=i.shape, dtype=i.dtype, ctx=i.context,
@@ -379,22 +385,30 @@ class Parameter(object):
                                 self._grad, self.grad_req)
 
     def _reduce(self):
-        """Reduce data from multiple context to cpu."""
-        ctx = context.cpu()
+        """Reduce data from multiple device to cpu."""
+        device = cpu()
         if self._stype == 'default':
             block = self.list_data()
-            if is_np_array():
-                data = sum([w.copyto(ctx) for w in block]) / len(block)
+            if len(block) > 1:
+                if is_np_array():
+                    data = sum([w.copyto(device) for w in block]) / len(block)
+                else:
+                    data = ndarray.add_n(*(w.copyto(device) for w in block)) / len(block)
             else:
-                data = ndarray.add_n(*(w.copyto(ctx) for w in block)) / len(block)
+                data = self.data().copyto(device)
         else:
             # fetch all rows for 'row_sparse' param
-            all_row_ids = ndarray.arange(0, self.shape[0], dtype='int64', ctx=ctx)
-            data = ndarray.zeros(self.shape, stype='row_sparse', ctx=ctx)
-            self._trainer._row_sparse_pull(self, data, all_row_ids, full_idx=True)
+            all_row_ids = ndarray.arange(0, self.shape[0], dtype='int64', ctx=device)
+            data = ndarray.zeros(self.shape, stype='row_sparse', ctx=device)
+            trainer = self._trainer() if self._trainer else None
+            if not trainer:
+                raise RuntimeError(f"Cannot reduce row_sparse data for Parameter '{self.name}' when no " \
+                                   "Trainer is created with it.")
+            trainer._row_sparse_pull(self, data, all_row_ids, full_idx=True)
         return data
 
-    def initialize(self, init=None, ctx=None, default_init=initializer.Uniform(),
+    @wrap_ctx_to_device_func
+    def initialize(self, init=None, device=None, default_init=initializer.Uniform(),
                    force_reinit=False):
         """Initializes parameter and gradient arrays. Only used for :py:class:`NDArray` API.
 
@@ -402,9 +416,9 @@ class Parameter(object):
         ----------
         init : Initializer
             The initializer to use. Overrides :py:meth:`Parameter.init` and default_init.
-        ctx : Context or list of Context, defaults to :py:meth:`context.current_context()`.
-            Initialize Parameter on given context. If ctx is a list of Context, a
-            copy will be made for each context.
+        device : Device or list of Device, default :py:meth:`device.current_device()`.
+            Assign Parameter to given device. If device is a list of Device, a
+            copy will be made for each device.
 
             .. note::
                 Copies are independent arrays. User is responsible for keeping
@@ -416,11 +430,10 @@ class Parameter(object):
             and :py:meth:`Parameter.init` are ``None``.
         force_reinit : bool, default False
             Whether to force re-initialization if parameter is already initialized.
-
         Examples
         --------
         >>> weight = mx.gluon.Parameter('weight', shape=(2, 2))
-        >>> weight.initialize(ctx=mx.cpu(0))
+        >>> weight.initialize(device=mx.cpu(0))
         >>> weight.data()
         [[-0.01068833  0.01729892]
          [ 0.02042518 -0.01618656]]
@@ -429,7 +442,7 @@ class Parameter(object):
         [[ 0.  0.]
          [ 0.  0.]]
         <NDArray 2x2 @cpu(0)>
-        >>> weight.initialize(ctx=[mx.gpu(0), mx.gpu(1)])
+        >>> weight.initialize(device=[mx.gpu(0), mx.gpu(1)])
         >>> weight.data(mx.gpu(0))
         [[-0.00873779 -0.02834515]
          [ 0.05484822 -0.06206018]]
@@ -440,74 +453,83 @@ class Parameter(object):
         <NDArray 2x2 @gpu(1)>
         """
         if self._data is not None and not force_reinit:
-            warnings.warn("Parameter '%s' is already initialized, ignoring. " \
-                          "Set force_reinit=True to re-initialize."%self.name,
+            warnings.warn(f"Parameter '{self.name}' is already initialized, ignoring. " \
+                          "Set force_reinit=True to re-initialize.",
                           stacklevel=2)
             return
         self._data = self._grad = None
-
-        if ctx is None:
-            ctx = [context.current_context()]
-        if isinstance(ctx, Context):
-            ctx = [ctx]
+        if device is None:
+            device = [_device.current_device()]
+        if isinstance(device, Device):
+            device = [device]
+        if isinstance(self.init, initializer.RNNFused):
+            self.init.set_initializer(init if init else default_init)
+            init = default_init = self.init
         if init is None:
             init = default_init if self.init is None else self.init
         if not shape_is_known(self.shape):
             if self._allow_deferred_init:
-                self._deferred_init = (init, ctx, default_init, None)
+                self._deferred_init = (init, device, default_init, None)
                 return
-            raise ValueError("Cannot initialize Parameter '%s' because it has " \
-                             "invalid shape: %s."%(self.name, str(self.shape)))
+            raise ValueError(f"Cannot initialize Parameter '{self.name}' because it has " \
+                             f"invalid shape: {str(self.shape)}.")
 
-        self._deferred_init = (init, ctx, default_init, None)
+        self._deferred_init = (init, device, default_init, None)
         self._finish_deferred_init()
 
-    def reset_ctx(self, ctx):
-        """Re-assign Parameter to other contexts.
+    def reset_device(self, device):
+        """Re-assign Parameter to other devices.
 
         Parameters
         ----------
-        ctx : Context or list of Context, default ``context.current_context()``.
-            Assign Parameter to given context. If ctx is a list of Context, a
-            copy will be made for each context.
+        device : Device or list of Device, default ``device.current_device()``.
+            Assign Parameter to given device. If device is a list of Device, a
+            copy will be made for each device.
         """
-        if ctx is None:
-            ctx = [context.current_context()]
-        if isinstance(ctx, Context):
-            ctx = [ctx]
+        if device is None:
+            device = [_device.current_device()]
+        if isinstance(device, Device):
+            device = [device]
         if self._data:
             data = self._reduce()
             with autograd.pause():
-                self._init_impl(data, ctx)
+                self._init_impl(data, device)
         elif self._deferred_init:
             init, _, default_init, data = self._deferred_init
-            self._deferred_init = (init, ctx, default_init, data)
+            self._deferred_init = (init, device, default_init, data)
         else:
-            raise ValueError("Cannot reset context for Parameter '%s' because it "
-                             "has not been initialized."%self.name)
+            raise ValueError(f"Cannot reset device for Parameter '{self.name}' because it "
+                             "has not been initialized.")
+
+    def reset_ctx(self, ctx):
+        """This function has been deprecated. Please refer to ``Parameter.reset_device``."""
+        warnings.warn('Parameter.reset_ctx has been renamed to'
+                      ' Parameter.reset_device', DeprecationWarning)
+        self.reset_device(ctx)
 
     def set_data(self, data):
-        """Sets this parameter's value on all contexts."""
+        """Sets this parameter's value on all devices."""
         self.shape = data.shape
 
         if self._data is None:
             assert self._deferred_init, \
-                "Parameter '%s' has not been initialized"%self.name
+                f"Parameter '{self.name}' has not been initialized"
             self._deferred_init = self._deferred_init[:3] + (data,)
             return
 
         # if update_on_kvstore, we need to make sure the copy stored in kvstore is in sync
-        if self._trainer and self._trainer._kv_initialized and self._trainer._update_on_kvstore:
-            if self not in self._trainer._params_to_init:
-                self._trainer._reset_kvstore()
+        trainer = self._trainer() if self._trainer else None
+        if trainer and trainer._kv_initialized and trainer._update_on_kvstore:
+            if self not in trainer._params_to_init:
+                trainer._reset_kvstore()
 
         for arr in self._check_and_get(self._data, list):
             arr[:] = data
 
     def row_sparse_data(self, row_id):
-        """Returns a copy of the 'row_sparse' parameter on the same context as row_id's.
+        """Returns a copy of the 'row_sparse' parameter on the same device as row_id's.
         The copy only retains rows whose ids occur in provided row ids.
-        The parameter must have been initialized on this context before.
+        The parameter must have been initialized on this device before.
 
         Parameters
         ----------
@@ -516,16 +538,15 @@ class Parameter(object):
 
         Returns
         -------
-        NDArray on row_id's context
+        NDArray on row_id's device
         """
         if self._stype != 'row_sparse':
-            raise RuntimeError("Cannot return a copy of Parameter %s via row_sparse_data() " \
-                               "because its storage type is %s. Please use data() instead." \
-                               %(self.name, self._stype))
-        return self._get_row_sparse(self._data, row_id.context, row_id)
+            raise RuntimeError(f"Cannot return a copy of Parameter {self.name} via row_sparse_data() " \
+                               f"because its storage type is {self._stype}. Please use data() instead.")
+        return self._get_row_sparse(self._data, row_id.device, row_id)
 
     def list_row_sparse_data(self, row_id):
-        """Returns copies of the 'row_sparse' parameter on all contexts, in the same order
+        """Returns copies of the 'row_sparse' parameter on all devices, in the same order
         as creation. The copy only retains rows whose ids occur in provided row ids.
         The parameter must have been initialized before.
 
@@ -539,33 +560,35 @@ class Parameter(object):
         list of NDArrays
         """
         if self._stype != 'row_sparse':
-            raise RuntimeError("Cannot return copies of Parameter '%s' on all contexts via " \
-                               "list_row_sparse_data() because its storage type is %s. Please " \
-                               "use data() instead." % (self.name, self._stype))
+            raise RuntimeError(f"Cannot return copies of Parameter '{self.name}' on all devices via " \
+                               f"list_row_sparse_data() because its storage type is {self._stype}. Please " \
+                               "use data() instead.")
         return self._get_row_sparse(self._data, list, row_id)
 
-    def data(self, ctx=None):
-        """Returns a copy of this parameter on one context. Must have been
-        initialized on this context before. For sparse parameters, use
+    @wrap_ctx_to_device_func
+    def data(self, device=None):
+        """Returns a copy of this parameter on one device. Must have been
+        initialized on this device before. For sparse parameters, use
         :py:meth:`Parameter.row_sparse_data` instead.
 
         Parameters
         ----------
-        ctx : Context
-            Desired context.
+        device : Device
+            Desired device.
 
         Returns
         -------
-        NDArray on ctx
+        NDArray on device
         """
         if self._stype != 'default':
-            raise RuntimeError("Cannot return a copy of Parameter '%s' on ctx %s via data() " \
-                               "because its storage type is %s. Please use row_sparse_data() " \
-                               "instead." % (self.name, str(ctx), self._stype))
-        return self._check_and_get(self._data, ctx)
+            raise RuntimeError(f"Cannot return a copy of Parameter '{self.name}' on device {str(device)} via data() " \
+                               f"because its storage type is {self._stype}. Please use row_sparse_data() instead.")
+        data = self._check_and_get(self._data, device)
+        dc.set_variable(data, self.var())
+        return data
 
     def list_data(self):
-        """Returns copies of this parameter on all contexts, in the same order
+        """Returns copies of this parameter on all devices, in the same order
         as creation. For sparse parameters, use :py:meth:`Parameter.list_row_sparse_data`
         instead.
 
@@ -574,44 +597,50 @@ class Parameter(object):
         list of NDArrays
         """
         if self._stype != 'default':
-            raise RuntimeError("Cannot return copies of Parameter '%s' on all contexts via " \
-                               "list_data() because its storage type is %s. Please use " \
-                               "row_sparse_data() instead." % (self.name, self._stype))
+            raise RuntimeError(f"Cannot return copies of Parameter '{self.name}' on all devices via " \
+                               f"list_data() because its storage type is {self._stype}. Please use " \
+                               "row_sparse_data() instead.")
         return self._check_and_get(self._data, list)
 
-    def grad(self, ctx=None):
-        """Returns a gradient buffer for this parameter on one context.
+    def grad(self, device=None):
+        """Returns a gradient buffer for this parameter on one device.
 
         Parameters
         ----------
-        ctx : Context
-            Desired context.
+        device : Device
+            Desired device.
         """
         if self._data is not None and self._grad is None:
             raise RuntimeError(
-                "Cannot get gradient array for Parameter '%s' " \
-                "because grad_req='null'"%(self.name))
-        return self._check_and_get(self._grad, ctx)
+                f"Cannot get gradient array for Parameter '{self.name}' " \
+                "because grad_req='null'")
+        return self._check_and_get(self._grad, device)
 
     def list_grad(self):
-        """Returns gradient buffers on all contexts, in the same order
+        """Returns gradient buffers on all devices, in the same order
         as :py:meth:`values`."""
         if self._data is not None and self._grad is None:
             raise RuntimeError(
-                "Cannot get gradient array for Parameter '%s' " \
-                "because grad_req='null'"%(self.name))
+                f"Cannot get gradient array for Parameter '{self.name}' " \
+                "because grad_req='null'")
         return self._check_and_get(self._grad, list)
 
     def list_ctx(self):
-        """Returns a list of contexts this parameter is initialized on."""
+        """This function has been deprecated. Please refer to ``Parameter.list_device``."""
+        warnings.warn('Parameter.list_ctx has been renamed to'
+                      ' Parameter.list_device', DeprecationWarning)
+        return self.list_device()
+
+    def list_device(self):
+        """Returns a list of devices this parameter is initialized on."""
         if self._data is None:
             if self._deferred_init:
                 return self._deferred_init[1]
-            raise RuntimeError("Parameter '%s' has not been initialized"%self.name)
-        return self._ctx_list
+            raise RuntimeError(f"Parameter '{self.name}' has not been initialized")
+        return self._device_list
 
     def zero_grad(self):
-        """Sets gradient buffer on all contexts to 0. No action is taken if
+        """Sets gradient buffer on all devices to 0. No action is taken if
         parameter is uninitialized or doesn't require gradient."""
         if self._grad is None:
             return
@@ -621,7 +650,10 @@ class Parameter(object):
     def var(self):
         """Returns a symbol representing this parameter."""
         if self._var is None:
-            self._var = symbol.var(self.name, shape=self.shape, dtype=self.dtype,
+            if self._var_name is None:  # _var_name is set manually in SymbolBlock.import
+                # The variable name is required by the storage profiler.
+                self._var_name = self._uuid.replace('-', '_') + '_' + self._name
+            self._var = symbol.var(self._var_name, shape=self.shape, dtype=self.dtype,
                                    lr_mult=self.lr_mult, wd_mult=self.wd_mult,
                                    init=self.init, stype=self._stype)
             if is_np_array():
@@ -637,6 +669,7 @@ class Parameter(object):
             The new data type.
         """
         self._dtype = dtype
+        self._var = None  # Clear Symbol Variable as it caches the dtype
         if self._data is None:
             return
         with autograd.pause():
@@ -646,6 +679,37 @@ class Parameter(object):
             self._grad = [i.astype(dtype) for i in self._grad]
             autograd.mark_variables(self._data, self._grad, self.grad_req)
 
+    def _check_and_setattr(self, **kwargs):
+        """check and set attributes for parameter"""
+        for k, v in kwargs.items():
+            if hasattr(self, k) and getattr(self, k) is not None:
+                existing = getattr(self, k)
+                if k == 'shape' and len(v) == len(existing):
+                    inferred_shape = []
+                    matched = True
+                    for dim1, dim2 in zip(v, existing):
+                        if dim1 != dim2 and dim1 > 0 and dim2 > 0:
+                            matched = False
+                            break
+                        elif dim1 == dim2:
+                            inferred_shape.append(dim1)
+                        elif dim1 in (0, -1):  # -1 means unknown dim size in np_shape mode
+                            inferred_shape.append(dim2)
+                        else:
+                            inferred_shape.append(dim1)
+
+                    if matched:
+                        self._shape = tuple(inferred_shape)
+                        continue
+                elif k == 'dtype' and np.dtype(v) == np.dtype(existing):
+                    continue
+
+                assert v is None or v == existing, \
+                    f"Cannot retrieve Parameter '{self.name}' because desired attribute " \
+                    f"does not match with stored for attribute '{k}': " \
+                    f"desired '{str(v)}' vs stored '{str(getattr(self, k))}'."
+            else:
+                setattr(self, k, v)
 
 class Constant(Parameter):
     """A constant parameter for holding immutable tensors.
@@ -655,40 +719,39 @@ class Constant(Parameter):
 
     `Constant` s can be created with either::
 
-        const = mx.gluon.Constant('const', [[1,2],[3,4]])
+        const = mx.gluon.Constant([[1,2],[3,4]])
 
     or::
 
         class Block(gluon.Block):
             def __init__(self, **kwargs):
                 super(Block, self).__init__(**kwargs)
-                self.const = self.params.get_constant('const', [[1,2],[3,4]])
+                self.const = mx.gluon.Constant([[1,2],[3,4]])
 
     Parameters
     ----------
-    name : str
-        Name of the parameter.
     value : array-like
         Initial value for the constant.
     """
-    def __init__(self, name, value):
+    def __init__(self, value):
         if not isinstance(value, ndarray.NDArray):
-            value = ndarray.array(value)
+            array_fn = _mx_np.array if is_np_array() else ndarray.array
+            value = array_fn(value)
         self.value = value
 
         class Init(initializer.Initializer):
             def _init_weight(self, _, arr):
                 value.copyto(arr)
-        init_name = 'Constant_{}_{}'.format(name, id(self))
+        init_name = 'Constant_{}'.format(id(self))
         initializer.alias(init_name)(Init)
 
         super(Constant, self).__init__(
-            name, grad_req='null', shape=value.shape, dtype=value.dtype,
+            name='const', grad_req='null', shape=value.shape, dtype=value.dtype,
             init=init_name)
 
     def __repr__(self):
-        s = 'Constant {name} (shape={shape}, dtype={dtype})'
-        return s.format(name=self.name, shape=self.shape, dtype=self.dtype)
+        s = 'Constant (shape={shape}, dtype={dtype})'
+        return s.format(shape=self.shape, dtype=self.dtype)
 
     @property
     def grad_req(self):
@@ -700,330 +763,3 @@ class Constant(Parameter):
             warnings.warn('Constant parameter "{}" does not support '
                           'grad_req other than "null", and new value "{}" '
                           'is ignored.'.format(self.name, req))
-
-
-class ParameterDict(object):
-    """A dictionary managing a set of parameters.
-
-    Parameters
-    ----------
-    prefix : str, default ``''``
-        The prefix to be prepended to all Parameters' names created by this dict.
-    shared : ParameterDict or None
-        If not ``None``, when this dict's :py:meth:`get` method creates a new parameter, will
-        first try to retrieve it from "shared" dict. Usually used for sharing
-        parameters with another Block.
-    """
-    def __init__(self, prefix='', shared=None):
-        self._prefix = prefix
-        self._params = OrderedDict()
-        self._shared = shared
-
-    def __repr__(self):
-        s = '{name}(\n{content}\n)'
-        name = self._prefix+' ' if self._prefix else ''
-        return s.format(name=name,
-                        content='\n'.join([_indent('  {0}'.format(v), 2)
-                                           for v in self.values()]))
-
-    def __getitem__(self, key):
-        return self._params[key]
-
-    def __iter__(self):
-        return iter(self._params)
-
-    def items(self):
-        return self._params.items()
-
-    def keys(self):
-        return self._params.keys()
-
-    def values(self):
-        return self._params.values()
-
-    @property
-    def prefix(self):
-        """Prefix of this dict. It will be prepended to :py:class:`Parameter`s' name created
-        with :py:func:`get`."""
-        return self._prefix
-
-    def _get_impl(self, name):
-        if name in self._params:
-            return self._params[name]
-        if self._shared is not None and name in self._shared._params:
-            self._params[name] = self._shared._params[name]
-            return self._shared._params[name]
-        return None
-
-    def get(self, name, **kwargs):
-        """Retrieves a :py:class:`Parameter` with name ``self.prefix+name``. If not found,
-        :py:func:`get` will first try to retrieve it from "shared" dict. If still not
-        found, :py:func:`get` will create a new :py:class:`Parameter` with key-word arguments and
-        insert it to self.
-
-        Parameters
-        ----------
-        name : str
-            Name of the desired Parameter. It will be prepended with this dictionary's
-            prefix.
-        **kwargs : dict
-            The rest of key-word arguments for the created :py:class:`Parameter`.
-
-        Returns
-        -------
-        Parameter
-            The created or retrieved :py:class:`Parameter`.
-        """
-        name = self.prefix + name
-        param = self._get_impl(name)
-        if param is None: # pylint: disable=too-many-nested-blocks
-            param = Parameter(name, **kwargs)
-            self._params[name] = param
-        else:
-            for k, v in kwargs.items():
-                if hasattr(param, k) and getattr(param, k) is not None:
-                    existing = getattr(param, k)
-                    if k == 'shape' and len(v) == len(existing):
-                        inferred_shape = []
-                        matched = True
-                        for dim1, dim2 in zip(v, existing):
-                            if dim1 != dim2 and dim1 > 0 and dim2 > 0:
-                                matched = False
-                                break
-                            elif dim1 == dim2:
-                                inferred_shape.append(dim1)
-                            elif dim1 in (0, -1):  # -1 means unknown dim size in np_shape mode
-                                inferred_shape.append(dim2)
-                            else:
-                                inferred_shape.append(dim1)
-
-                        if matched:
-                            param._shape = tuple(inferred_shape)
-                            continue
-                    elif k == 'dtype' and np.dtype(v) == np.dtype(existing):
-                        continue
-
-                    assert v is None or v == existing, \
-                        "Cannot retrieve Parameter '%s' because desired attribute " \
-                        "does not match with stored for attribute '%s': " \
-                        "desired '%s' vs stored '%s'."%(
-                            name, k, str(v), str(getattr(param, k)))
-                else:
-                    setattr(param, k, v)
-        return param
-
-    def get_constant(self, name, value=None):
-        """Retrieves a :py:class:`.Constant` with name ``self.prefix+name``. If not found,
-        :py:func:`get` will first try to retrieve it from "shared" dict. If still not
-        found, :py:func:`get` will create a new :py:class:`.Constant` with key-word
-        arguments and insert it to self.
-
-        Parameters
-        ----------
-        name : str
-            Name of the desired Constant. It will be prepended with this dictionary's
-            prefix.
-        value : array-like
-            Initial value of constant.
-
-        Returns
-        -------
-        :py:class:`.Constant`
-            The created or retrieved :py:class:`.Constant`.
-        """
-        name = self.prefix + name
-        param = self._get_impl(name)
-        if param is None:
-            if value is None:
-                raise KeyError("No constant named '{}'. Please specify value " \
-                               "if you want to create a new constant.".format(
-                                   name))
-            param = Constant(name, value)
-            self._params[name] = param
-        elif value is not None:
-            assert isinstance(param, Constant), \
-                "Parameter '{}' already exists but it is not a constant.".format(
-                    name)
-            if isinstance(value, ndarray.NDArray):
-                value = value.asnumpy()
-            assert param.shape == value.shape and \
-                (param.value.asnumpy() == value).all(), \
-                "Constant '{}' already exists but it's value doesn't match new " \
-                "value".format(name)
-        return param
-
-    def update(self, other):
-        """Copies all Parameters in ``other`` to self."""
-        for k, v in other.items():
-            if k in self._params:
-                assert self._params[k] is v, \
-                    "Cannot update self with other because they have different " \
-                    "Parameters with the same name '%s'"%k
-
-        for k, v in other.items():
-            self._params[k] = v
-
-    def initialize(self, init=initializer.Uniform(), ctx=None, verbose=False,
-                   force_reinit=False):
-        """Initializes all Parameters managed by this dictionary to be used for :py:class:`NDArray`
-        API. It has no effect when using :py:class:`Symbol` API.
-
-        Parameters
-        ----------
-        init : Initializer
-            Global default Initializer to be used when :py:meth:`Parameter.init` is ``None``.
-            Otherwise, :py:meth:`Parameter.init` takes precedence.
-        ctx : Context or list of Context
-            Keeps a copy of Parameters on one or many context(s).
-        verbose : bool, default False
-            Whether to verbosely print out details on initialization.
-        force_reinit : bool, default False
-            Whether to force re-initialization if parameter is already initialized.
-        """
-        if verbose:
-            init.set_verbosity(verbose=verbose)
-        for _, v in self.items():
-            v.initialize(None, ctx, init, force_reinit=force_reinit)
-
-    def zero_grad(self):
-        """Sets all Parameters' gradient buffer to 0."""
-        for i in self.values():
-            i.zero_grad()
-
-    def reset_ctx(self, ctx):
-        """Re-assign all Parameters to other contexts.
-
-        Parameters
-        ----------
-        ctx : Context or list of Context, default :py:meth:`context.current_context()`.
-            Assign Parameter to given context. If ctx is a list of Context, a
-            copy will be made for each context.
-        """
-        for i in self.values():
-            i.reset_ctx(ctx)
-
-    def setattr(self, name, value):
-        """Set an attribute to a new value for all Parameters.
-
-        For example, set grad_req to null if you don't need gradient w.r.t a
-        model's Parameters::
-
-            model.collect_params().setattr('grad_req', 'null')
-
-        or change the learning rate multiplier::
-
-            model.collect_params().setattr('lr_mult', 0.5)
-
-        Parameters
-        ----------
-        name : str
-            Name of the attribute.
-        value : valid type for attribute name
-            The new value for the attribute.
-        """
-        for i in self.values():
-            setattr(i, name, value)
-
-    def save(self, filename, strip_prefix=''):
-        """Save parameters to file.
-
-        Parameters
-        ----------
-        filename : str
-            Path to parameter file.
-        strip_prefix : str, default ''
-            Strip prefix from parameter names before saving.
-        """
-        arg_dict = {}
-        for param in self.values():
-            weight = param._reduce()
-            if not param.name.startswith(strip_prefix):
-                raise ValueError(
-                    "Prefix '%s' is to be striped before saving, but Parameter's "
-                    "name '%s' does not start with '%s'. "
-                    "this may be due to your Block shares parameters from other "
-                    "Blocks or you forgot to use 'with name_scope()' when creating "
-                    "child blocks. For more info on naming, please see "
-                    "http://mxnet.incubator.apache.org/tutorials/basic/naming.html"%(
-                        strip_prefix, param.name, strip_prefix))
-            arg_dict[param.name[len(strip_prefix):]] = weight
-        ndarray.save(filename, arg_dict)
-
-    def load(self, filename, ctx=None, allow_missing=False,
-             ignore_extra=False, restore_prefix='', cast_dtype=False,
-             dtype_source="current"):
-        """Load parameters from file.
-
-        Parameters
-        ----------
-        filename : str
-            Path to parameter file.
-        ctx : Context or list of Context
-            Context(s) initialize loaded parameters on.
-        allow_missing : bool, default False
-            Whether to silently skip loading parameters not represents in the file.
-        ignore_extra : bool, default False
-            Whether to silently ignore parameters from the file that are not
-            present in this ParameterDict.
-        restore_prefix : str, default ''
-            prepend prefix to names of stored parameters before loading.
-        cast_dtype : bool, default False
-            Cast the data type of the parameter
-        dtype_source : str, default 'current'
-            must be in {'current', 'saved'}
-            Only valid if cast_dtype=True, specify the source of the dtype for casting
-            the parameters
-        """
-        if restore_prefix:
-            for name in self.keys():
-                assert name.startswith(restore_prefix), \
-                    "restore_prefix is '%s' but Parameters name '%s' does not start " \
-                    "with '%s'"%(restore_prefix, name, restore_prefix)
-        ndarray_load = ndarray.load(filename)
-        self.load_dict(ndarray_load, ctx, allow_missing,
-                       ignore_extra, restore_prefix, filename, cast_dtype, dtype_source)
-
-    def load_dict(self, param_dict, ctx=None, allow_missing=False,
-                  ignore_extra=False, restore_prefix='', filename=None, cast_dtype=False,
-                  dtype_source="current"):
-        """Load parameters from dict
-
-        Parameters
-        ----------
-        param_dict : dict
-            Dictionary containing model parameters, preprended with arg: and aux: names
-        ctx : Context or list of Context
-            Context(s) initialize loaded parameters on.
-        allow_missing : bool, default False
-            Whether to silently skip loading parameters not represented in the file.
-        ignore_extra : bool, default False
-            Whether to silently ignore parameters from the file that are not
-            present in this ParameterDict.
-        restore_prefix : str, default ''
-            prepend prefix to names of stored parameters before loading
-        filename : str, default None
-        cast_dtype : bool, default False
-            Cast the data type of the NDArray loaded from the checkpoint to the dtype
-            provided by the Parameter if any
-        """
-        lprefix = len(restore_prefix)
-        loaded = [(k[4:] if k.startswith('arg:') or k.startswith('aux:') else k, v) \
-                  for k, v in param_dict.items()] if isinstance(param_dict, dict) else param_dict
-        arg_dict = {restore_prefix+k: v for k, v in loaded}
-        error_str = "file: %s" % (filename) if filename else "param_dict"
-        if not allow_missing:
-            for name in self.keys():
-                assert name in arg_dict, \
-                    "Parameter '%s' is missing in %s, which contains parameters: %s. " \
-                    "Please make sure source and target networks have the same prefix."%(
-                        name[lprefix:], error_str, _brief_print_list(arg_dict.keys()))
-        for name in arg_dict:
-            if name not in self._params:
-                assert ignore_extra, \
-                    "Parameter '%s' loaded from %s is not present in ParameterDict, " \
-                    "choices are: %s. Set ignore_extra to True to ignore. " \
-                    "Please make sure source and target networks have the same prefix."%(
-                        name[lprefix:], error_str, _brief_print_list(self._params.keys()))
-                continue
-            self[name]._load_init(arg_dict[name], ctx, cast_dtype=cast_dtype,
-                                  dtype_source=dtype_source)

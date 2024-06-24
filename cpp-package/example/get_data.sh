@@ -33,11 +33,10 @@ download () {
     fi
 
     echo "Downloading ${URL} ..."
-    local CURL_OPTIONS="--connect-timeout 10 \
+    local CURL_OPTIONS="--connect-timeout 60 \
               --max-time 300 \
-              --retry-delay 10 \
-              --retry 3 \
-              --retry-delay 0 \
+              --retry-delay 30 \
+              --retry 5 \
               --location \
               --silent"
     curl ${CURL_OPTIONS} ${URL} -o ${GZ_FILE_NAME}
@@ -53,10 +52,10 @@ download () {
 
 # MNIST dataset from: http://yann.lecun.com/exdb/mnist/
 FILES=(
-    "http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz"
-    "http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz"
-    "http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz"
-    "http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz"
+    "https://web.archive.org/web/20160828233817/http://yann.lecun.com/exdb/mnist/train-images-idx3-ubyte.gz"
+    "https://web.archive.org/web/20160828233817/http://yann.lecun.com/exdb/mnist/train-labels-idx1-ubyte.gz"
+    "https://web.archive.org/web/20160828233817/http://yann.lecun.com/exdb/mnist/t10k-images-idx3-ubyte.gz"
+    "https://web.archive.org/web/20160828233817/http://yann.lecun.com/exdb/mnist/t10k-labels-idx1-ubyte.gz"
     "http://data.mxnet.io/data/mnist_train.csv.gz")
 
 for FILE in ${FILES[@]}; do

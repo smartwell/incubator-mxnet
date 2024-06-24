@@ -18,74 +18,106 @@
  */
 
 /*!
- *  Copyright (c) 2016 by Contributors
  * \file elemwise_binary_scalar_op_extended.cc
  * \brief CPU Implementation of extended binary scalar functions.
  */
-#include "./elemwise_unary_op.h"
-#include "./elemwise_binary_op.h"
-#include "./elemwise_binary_scalar_op.h"
+#include "elemwise_unary_op.h"
+#include "elemwise_binary_op.h"
+#include "elemwise_binary_scalar_op.h"
+#include "operator/nn/dnnl/dnnl_pow_mul_scalar-inl.h"
 
 namespace mxnet {
 namespace op {
 MXNET_OPERATOR_REGISTER_BINARY_SCALAR(_maximum_scalar)
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::maximum>)
-.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_maximum_scalar"})
-.add_alias("_MaximumScalar");
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::maximum>)
+    .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_maximum_scalar"})
+    .add_alias("_MaximumScalar")
+    .add_alias("_npi_maximum_scalar");
 
 MXNET_OPERATOR_REGISTER_BINARY(_backward_maximum_scalar)
-.add_argument("scalar", "float", "scalar value")
-.set_attr_parser([](NodeAttrs *attrs) { attrs->parsed = std::stod(attrs->dict["scalar"]); })
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<cpu, mshadow_op::ge>);
+    .add_arguments(NumpyBinaryScalarParam::__FIELDS__())
+    .set_attr_parser(ParamParser<NumpyBinaryScalarParam>)
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<cpu, mshadow_op::ge>);
 
 MXNET_OPERATOR_REGISTER_BINARY_SCALAR(_minimum_scalar)
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::minimum>)
-.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_minimum_scalar"})
-.add_alias("_MinimumScalar");
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::minimum>)
+    .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_minimum_scalar"})
+    .add_alias("_MinimumScalar")
+    .add_alias("_npi_minimum_scalar");
 
 MXNET_OPERATOR_REGISTER_BINARY(_backward_minimum_scalar)
-.add_argument("scalar", "float", "scalar value")
-.set_attr_parser([](NodeAttrs *attrs) { attrs->parsed = std::stod(attrs->dict["scalar"]); })
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<cpu, mshadow_op::le>);
+    .add_arguments(NumpyBinaryScalarParam::__FIELDS__())
+    .set_attr_parser(ParamParser<NumpyBinaryScalarParam>)
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<cpu, mshadow_op::le>);
+
+#if MXNET_USE_ONEDNN == 1
+bool PowerStorageType(const nnvm::NodeAttrs& attrs,
+                      const int dev_mask,
+                      DispatchMode* dispatch_mode,
+                      std::vector<int>* inputs,
+                      std::vector<int>* outputs) {
+  CHECK_EQ(inputs->size(), 1);
+  CHECK_EQ(outputs->size(), 1);
+
+  return DNNLStorageType(attrs, dev_mask, true, dispatch_mode, inputs, outputs);
+}
+
+void PowerComputeExCPU(const nnvm::NodeAttrs& attrs,
+                       const OpContext& ctx,
+                       const std::vector<mxnet::NDArray>& inputs,
+                       const std::vector<OpReqType>& req,
+                       const std::vector<mxnet::NDArray>& outputs) {
+  if (SupportDNNL<DNNLTypeMode::FloatTypes>(inputs[0])) {
+    DNNL_OPCHECK_INIT(false, outputs.size(), inputs, outputs);
+    DNNLRun(DNNLPowMulScalarForward<false>, attrs, ctx, inputs, req, outputs);
+    DNNL_OPCHECK_RUN(
+        (BinaryScalarOp::Compute<cpu, mshadow_op::power>), attrs, ctx, inputs, req, outputs);
+  } else {
+    FallBackCompute(
+        BinaryScalarOp::Compute<cpu, mshadow_op::power>, attrs, ctx, inputs, req, outputs);
+  }
+}
+#endif  // MXNET_USE_ONEDNN == 1
 
 MXNET_OPERATOR_REGISTER_BINARY_SCALAR(_power_scalar)
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::power>)
-.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_power_scalar"})
-.add_alias("_PowerScalar");
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::power>)
+#if MXNET_USE_ONEDNN == 1
+    .set_attr<FComputeEx>("FComputeEx<cpu>", PowerComputeExCPU)
+    .set_attr<FInferStorageType>("FInferStorageType", PowerStorageType)
+#endif
+    .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_power_scalar"})
+    .add_alias("_PowerScalar");
 
 MXNET_OPERATOR_REGISTER_BINARY(_backward_power_scalar)
-.add_argument("scalar", "float", "scalar value")
-.set_attr_parser([](NodeAttrs *attrs) { attrs->parsed = std::stod(attrs->dict["scalar"]); })
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<
-  cpu, mshadow_op::power_grad>);
+    .add_arguments(NumpyBinaryScalarParam::__FIELDS__())
+    .set_attr_parser(ParamParser<NumpyBinaryScalarParam>)
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<cpu, mshadow_op::power_grad>);
 
 MXNET_OPERATOR_REGISTER_BINARY_SCALAR(_rpower_scalar)
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<
-  cpu, mshadow_op::rpower>)
-.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseOut{"_backward_rpower_scalar"})
-.add_alias("_RPowerScalar");
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::rpower>)
+    .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseOut{"_backward_rpower_scalar"})
+    .add_alias("_RPowerScalar");
 
 MXNET_OPERATOR_REGISTER_BINARY(_backward_rpower_scalar)
-.add_argument("scalar", "float", "scalar value")
-.set_attr_parser([](NodeAttrs *attrs) { attrs->parsed = std::stod(attrs->dict["scalar"]); })
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<
-  cpu, mshadow_op::rpower_grad>);
+    .add_arguments(NumpyBinaryScalarParam::__FIELDS__())
+    .set_attr_parser(ParamParser<NumpyBinaryScalarParam>)
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<cpu, mshadow_op::rpower_grad>);
 
 MXNET_OPERATOR_REGISTER_BINARY_SCALAR(_hypot_scalar)
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<
-  cpu, mshadow_op::hypot>)
-.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{ "_backward_hypot_scalar" })
-.add_alias("_HypotScalar");
+    .add_alias("_npi_hypot_scalar")
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::hypot>)
+    .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_hypot_scalar"})
+    .add_alias("_HypotScalar");
 
 MXNET_OPERATOR_REGISTER_BINARY(_backward_hypot_scalar)
-.add_argument("scalar", "float", "scalar value")
-.set_attr_parser([](NodeAttrs *attrs) { attrs->parsed = std::stod(attrs->dict["scalar"]); })
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Backward<
-  cpu, mshadow_op::hypot_grad_left>);
+    .add_arguments(NumpyBinaryScalarParam::__FIELDS__())
+    .set_attr_parser(ParamParser<NumpyBinaryScalarParam>)
+    .set_attr<FCompute>("FCompute<cpu>",
+                        BinaryScalarOp::Backward<cpu, mshadow_op::hypot_grad_left>);
 
 NNVM_REGISTER_OP(smooth_l1)
-.add_alias("_npx_smooth_l1")
-.describe(R"code(Calculate Smooth L1 Loss(lhs, scalar) by summing
+    .add_alias("_npx_smooth_l1")
+    .describe(R"code(Calculate Smooth L1 Loss(lhs, scalar) by summing
 
 .. math::
 
@@ -103,36 +135,24 @@ Example::
   smooth_l1([1, 2, 3, 4], scalar=1) = [0.5, 1.5, 2.5, 3.5]
 
 )code" ADD_FILELINE)
-.set_num_inputs(1)
-.set_num_outputs(1)
-.set_attr_parser([](NodeAttrs* attrs) {
-    if (attrs->dict.find("scalar") != attrs->dict.end()) {
-      attrs->parsed = std::stod(attrs->dict["scalar"]);
-    } else {
-      attrs->parsed = 1.0;
-    }
-  })
-.set_attr<mxnet::FInferShape>("FInferShape", ElemwiseShape<1, 1>)
-.set_attr<nnvm::FInferType>("FInferType", ElemwiseType<1, 1>)
-.set_attr<nnvm::FInplaceOption>("FInplaceOption",
-                                [](const NodeAttrs& attrs){
-                                  return std::vector<std::pair<int, int> >{{0, 0}};
-                                })
-.add_argument("data", "NDArray-or-Symbol", "source input")
-.add_argument("scalar", "float", "scalar input")
-.set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::smooth_l1_loss>)
-.set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{ "_backward_smooth_l1" });
+    .set_num_inputs(1)
+    .set_num_outputs(1)
+    .set_attr_parser(ParamParser<NumpyBinaryScalarParam>)
+    .set_attr<mxnet::FInferShape>("FInferShape", ElemwiseShape<1, 1>)
+    .set_attr<nnvm::FInferType>("FInferType", ElemwiseType<1, 1>)
+    .set_attr<nnvm::FInplaceOption>("FInplaceOption",
+                                    [](const NodeAttrs& attrs) {
+                                      return std::vector<std::pair<int, int> >{{0, 0}};
+                                    })
+    .add_argument("data", "NDArray-or-Symbol", "source input")
+    .add_argument("scalar", "float", "scalar input")
+    .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::Compute<cpu, mshadow_op::smooth_l1_loss>)
+    .set_attr<nnvm::FGradient>("FGradient", ElemwiseGradUseIn{"_backward_smooth_l1"});
 
 MXNET_OPERATOR_REGISTER_BINARY(_backward_smooth_l1)
-  .set_attr_parser([](NodeAttrs *attrs) {
-      if (attrs->dict.find("scalar") != attrs->dict.end()) {
-        attrs->parsed = std::stod(attrs->dict["scalar"]);
-      } else {
-        attrs->parsed = 1.0;
-      }
-})
-.set_attr<FCompute>("FCompute<cpu>",
-                    BinaryScalarOp::Backward<cpu, mshadow_op::smooth_l1_gradient>);
+    .set_attr_parser(ParamParser<NumpyBinaryScalarParam>)
+    .set_attr<FCompute>("FCompute<cpu>",
+                        BinaryScalarOp::Backward<cpu, mshadow_op::smooth_l1_gradient>);
 
 }  // namespace op
 }  // namespace mxnet

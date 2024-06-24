@@ -16,7 +16,6 @@
 # under the License.
 
 """Weight initializer."""
-from __future__ import absolute_import, print_function
 
 import re
 import logging
@@ -29,6 +28,9 @@ from .ndarray import NDArray, load
 from . import random
 from . import registry
 from . import ndarray
+from . util import is_np_array
+from . import numpy as _mx_np  # pylint: disable=reimported
+
 
 # inherit str for backward compatibility
 class InitDesc(str):
@@ -260,11 +262,16 @@ class Initializer(object):
 
     def _init_default(self, name, _):
         raise ValueError(
-            'Unknown initialization pattern for %s. ' \
+            f'Unknown initialization pattern for {name}. ' \
             'Default initialization is now limited to '\
             '"weight", "bias", "gamma" (1.0), and "beta" (0.0).' \
-            'Please use mx.sym.Variable(init=mx.init.*) to set initialization pattern' % name)
+            'Please use mx.sym.Variable(init=mx.init.*) to set initialization pattern')
 
+    def __eq__(self, other):
+        if not isinstance(other, Initializer):
+            return NotImplemented
+        # pylint: disable=unidiomatic-typecheck
+        return type(self) is type(other) and self._kwargs == other._kwargs
 
 # pylint: disable=invalid-name
 _register = registry.get_register_func(Initializer, 'initializer')
@@ -299,11 +306,9 @@ def register(klass):
     ...   def _init_bias(self, _, arr):
     ...     arr[:] = 1
     ...
-    >>> # Module is an instance of 'mxnet.module.Module'
+    >>> # block is an instance of 'mxnet.gluon.Block'
     ...
-    >>> module.init_params("custominit")
-    >>> # module.init_params("myinit")
-    >>> # module.init_params(CustomInit())
+    >>> block.initialize(CustomInit())
     """
     return _register(klass)
 
@@ -340,15 +345,14 @@ class Load(object):
     def __call__(self, name, arr):
         if name in self.param:
             assert arr.shape == self.param[name].shape, \
-                'Parameter %s cannot be initialized from loading. '%name + \
-                'Shape mismatch, target %s vs loaded %s'%(str(arr.shape),
-                                                          self.param[name].shape)
+                f'Parameter {name} cannot be initialized from loading. ' + \
+                f'Shape mismatch, target {str(arr.shape)} vs loaded {self.param[name].shape}'
             arr[:] = self.param[name]
             if self.verbose:
                 logging.info('Initialized %s by loading', name)
         else:
             assert self.default_init is not None, \
-                "Cannot Initialize %s. Not found in loaded param "%name + \
+                f"Cannot Initialize {name}. Not found in loaded param " + \
                 "and no default Initializer is provided."
             self.default_init(name, arr)
             if self.verbose:
@@ -367,11 +371,11 @@ class Mixed(object):
 
     Example
     -------
-    >>> # Given 'module', an instance of 'mxnet.module.Module', initialize biases to zero
+    >>> # Given 'block', an instance of 'mxnet.gluon.Block', initialize biases to zero
     ... # and every other parameter to random values with uniform distribution.
     ...
     >>> init = mx.initializer.Mixed(['bias', '.*'], [mx.init.Zero(), mx.init.Uniform(0.1)])
-    >>> module.init_params(init)
+    >>> block.initialize(init)
     >>>
     >>> for dictionary in module.get_params():
     ...     for key in dictionary:
@@ -403,10 +407,10 @@ class Zero(Initializer):
 
     Example
     -------
-    >>> # Given 'module', an instance of 'mxnet.module.Module', initialize weights to zero.
+    >>> # Given 'block', an instance of 'mxnet.gluon.Block', initialize weights to zero.
     ...
     >>> init = mx.initializer.Zero()
-    >>> module.init_params(init)
+    >>> module.initialize(init)
     >>> for dictionary in module.get_params():
     ...     for key in dictionary:
     ...         print(key)
@@ -428,10 +432,10 @@ class One(Initializer):
 
     Example
     -------
-    >>> # Given 'module', an instance of 'mxnet.module.Module', initialize weights to one.
+    >>> # Given 'block', an instance of 'mxnet.gluon.Block', initialize weights to one.
     ...
     >>> init = mx.initializer.One()
-    >>> module.init_params(init)
+    >>> module.initialize(init)
     >>> for dictionary in module.get_params():
     ...     for key in dictionary:
     ...         print(key)
@@ -483,11 +487,11 @@ class Uniform(Initializer):
 
     Example
     -------
-    >>> # Given 'module', an instance of 'mxnet.module.Module', initialize weights
+    >>> # Given 'block', an instance of 'mxnet.gluon.Block', initialize weights
     >>> # to random values uniformly sampled between -0.1 and 0.1.
     ...
     >>> init = mx.init.Uniform(0.1)
-    >>> module.init_params(init)
+    >>> module.initialize(init)
     >>> for dictionary in module.get_params():
     ...     for key in dictionary:
     ...         print(key)
@@ -501,7 +505,8 @@ class Uniform(Initializer):
         self.scale = scale
 
     def _init_weight(self, _, arr):
-        random.uniform(-self.scale, self.scale, out=arr)
+        uniform_fn = _mx_np.random.uniform if is_np_array() else random.uniform
+        uniform_fn(-self.scale, self.scale, arr.shape, dtype=arr.dtype, out=arr)
 
 @register
 class Normal(Initializer):
@@ -516,11 +521,11 @@ class Normal(Initializer):
 
     Example
     -------
-    >>> # Given 'module', an instance of 'mxnet.module.Module', initialize weights
+    >>> # Given 'block', an instance of 'mxnet.gluon.Block', initialize weights
     >>> # to random values sampled from a normal distribution.
     ...
     >>> init = mx.init.Normal(0.5)
-    >>> module.init_params(init)
+    >>> module.initialize(init)
     >>> for dictionary in module.get_params():
     ...     for key in dictionary:
     ...         print(key)
@@ -534,7 +539,8 @@ class Normal(Initializer):
         self.sigma = sigma
 
     def _init_weight(self, _, arr):
-        random.normal(0, self.sigma, out=arr)
+        normal_fn = _mx_np.random.normal if is_np_array() else random.normal
+        normal_fn(0, self.sigma, arr.shape, dtype=arr.dtype, out=arr)
 
 @register
 class Orthogonal(Initializer):
@@ -633,9 +639,11 @@ class Xavier(Initializer):
             raise ValueError("Incorrect factor type")
         scale = np.sqrt(self.magnitude / factor)
         if self.rnd_type == "uniform":
-            random.uniform(-scale, scale, out=arr)
+            uniform_fn = _mx_np.random.uniform if is_np_array() else random.uniform
+            uniform_fn(-scale, scale, arr.shape, dtype=arr.dtype, out=arr)
         elif self.rnd_type == "gaussian":
-            random.normal(0, scale, out=arr)
+            normal_fn = _mx_np.random.normal if is_np_array() else random.normal
+            normal_fn(0, scale, arr.shape, dtype=arr.dtype, out=arr)
         else:
             raise ValueError("Unknown random type")
 
@@ -705,54 +713,119 @@ class LSTMBias(Initializer):
 
 
 @register
-class FusedRNN(Initializer):
-    """Initialize parameters for fused rnn layers.
+class RNNFused(Initializer):
+    """Initialize RNN fused parameter with bias part initialized to 0.0 and
+    weight initialized with random values uniformly sampled from a given range.
 
     Parameters
     ----------
-    init : Initializer
-        initializer applied to unpacked weights. Fall back to global
-        initializer if None.
-    num_hidden : int
-        should be the same with arguments passed to FusedRNNCell.
-    num_layers : int
-        should be the same with arguments passed to FusedRNNCell.
-    mode : str
-        should be the same with arguments passed to FusedRNNCell.
-    bidirectional : bool
-        should be the same with arguments passed to FusedRNNCell.
-    forget_bias : float
-        should be the same with arguments passed to FusedRNNCell.
+    mode : {'gru', 'lstm', 'rnn_relu', 'rnn_tanh'}, required
+        the type of RNN to compute
+    num_layers : int (non-negative), required
+        number of stacked layers
+    state_size : int (non-negative), required
+        size of the state for each layer
+    bidirectional : boolean, optional, default=0
+        whether to use bidirectional recurrent layers
+    projection_size : int or None, optional, default='None'
+        size of project size
+    scale : float, optional
+        The bound on the range of the generated random values for weights.
+        Values are generated from the range [-`scale`, `scale`].
+        Default scale is 0.07.
     """
-    def __init__(self, init, num_hidden, num_layers, mode, bidirectional=False, forget_bias=1.0):
-        if isinstance(init, string_types):
-            klass, kwargs = json.loads(init)
-            init = registry._REGISTRY[klass.lower()](**kwargs)
-        super(FusedRNN, self).__init__(init=init.dumps() if init is not None else None,
-                                       num_hidden=num_hidden, num_layers=num_layers, mode=mode,
-                                       bidirectional=bidirectional, forget_bias=forget_bias)
-        self._init = init
-        self._num_hidden = num_hidden
-        self._num_layers = num_layers
-        self._mode = mode
-        self._bidirectional = bidirectional
-        self._forget_bias = forget_bias
+    def __init__(self, mode, num_layers, state_size, bidirectional=False,
+                 projection_size=None, i2h_weight_initializer=None,
+                 h2h_weight_initializer=None, i2h_bias_initializer=None,
+                 h2h_bias_initializer=None, h2r_weight_initializer=None):
+        super(RNNFused, self).__init__(mode=mode, num_layers=num_layers,
+                                       state_size=state_size,
+                                       bidirectional=bidirectional,
+                                       projection_size=projection_size,
+                                       i2h_weight_initializer=i2h_weight_initializer,
+                                       h2h_weight_initializer=h2h_weight_initializer,
+                                       i2h_bias_initializer=i2h_bias_initializer,
+                                       h2h_bias_initializer=h2h_bias_initializer,
+                                       h2r_weight_initializer=h2r_weight_initializer)
+        self.gates = {'rnn_relu': 1, 'rnn_tanh': 1, 'lstm': 4, 'gru': 3}[mode]
+        self.num_layers = num_layers
+        self.num_hidden = state_size
+        self.dir = 2 if bidirectional else 1
+        self.projection_size = projection_size
+        self._i2h_weight_initializer = i2h_weight_initializer
+        self._h2h_weight_initializer = h2h_weight_initializer
+        self._i2h_bias_initializer = i2h_bias_initializer
+        self._h2h_bias_initializer = h2h_bias_initializer
+        self._h2r_weight_initializer = h2r_weight_initializer
 
-    def _init_weight(self, desc, arr): # pylint: disable=arguments-differ
-        from .rnn import rnn_cell
-        cell = rnn_cell.FusedRNNCell(self._num_hidden, self._num_layers,
-                                     self._mode, self._bidirectional,
-                                     forget_bias=self._forget_bias, prefix='')
-        args = cell.unpack_weights({'parameters': arr})
-        for name in args:
-            arg_desc = InitDesc(name, global_init=desc.global_init)
-            # for lstm bias, we use a custom initializer
-            # which adds a bias to the forget gate
-            if self._mode == 'lstm' and name.endswith("_f_bias"):
-                args[name][:] = self._forget_bias
-            elif self._init is None:
-                desc.global_init(arg_desc, args[name])
-            else:
-                self._init(arg_desc, args[name])
+    # pylint: disable=too-many-nested-blocks
+    def _init_weight(self, name, arr):
+        arr_len = arr.shape[0]
+        size = self.num_hidden * self.dir * self.gates
+        if not self.projection_size:
+            # second layer size
+            size2 = (self.num_hidden * self.dir + self.num_hidden + 2) * size
+            input_size = (arr_len - (self.num_layers - 1) * size2) // \
+                size - 2 - self.num_hidden
+        else:
+            # second layer size
+            size2 = (self.projection_size * self.dir + self.projection_size + 2) * size
+            size_projection = self.projection_size * self.num_hidden * self.num_layers * self.dir
+            input_size = (arr_len - size_projection - (self.num_layers - 1) * size2) // \
+                size - 2 - self.projection_size
+        begin = 0
+        if not self.projection_size:
+            for param in ['weight', 'bias']:
+                for layer_num in range(self.num_layers):
+                    for _ in range(self.dir):
+                        for connect in ['i2h', 'h2h']:
+                            num_inputs = input_size
+                            if layer_num != 0:
+                                num_inputs = self.num_hidden * self.dir
+                            if connect == 'h2h':
+                                num_inputs = self.num_hidden
+                            shape0 = self.gates * self.num_hidden
+                            if param == 'weight':
+                                cur_len = shape0 * num_inputs
+                            else:
+                                cur_len = shape0
+                            self._init_util(param, connect, arr[begin:begin+cur_len])
+                            begin += cur_len
+        else:
+            for param in ['weight', 'bias']:
+                for layer_num in range(self.num_layers):
+                    for _ in range(self.dir):
+                        for connect in ['i2h', 'h2h', 'h2r']:
+                            if connect != 'h2r' or param != 'bias':
+                                if connect == 'h2r':
+                                    cur_len = self.projection_size * self.num_hidden
+                                else:
+                                    num_inputs = input_size
+                                    if layer_num != 0:
+                                        num_inputs = self.projection_size * self.dir
+                                    if connect == 'h2h':
+                                        num_inputs = self.projection_size
+                                    shape0 = self.gates * self.num_hidden
+                                    if param == 'weight':
+                                        cur_len = shape0 * num_inputs
+                                    else:
+                                        cur_len = shape0
+                                self._init_util(param, connect, arr[begin:begin+cur_len])
+                                begin += cur_len
 
-        arr[:] = cell.pack_weights(args)['parameters']
+    def _init_util(self, param, connect, arr):
+        name = "_{}_{}_initializer".format(connect, param)
+        init = getattr(self, name)
+        create(init)(InitDesc(name, {'__init__': init}), arr)
+
+    def set_initializer(self, init):
+        self._i2h_weight_initializer = \
+            init if not self._i2h_weight_initializer else 'uniform'
+        self._h2h_weight_initializer = \
+            init if not self._h2h_weight_initializer else 'uniform'
+        self._i2h_bias_initializer = \
+            init if not self._i2h_bias_initializer else 'zero'
+        self._h2h_bias_initializer = \
+            init if not self._i2h_bias_initializer else 'zero'
+        self._h2r_weight_initializer = \
+            init if not self._h2r_weight_initializer else 'uniform'

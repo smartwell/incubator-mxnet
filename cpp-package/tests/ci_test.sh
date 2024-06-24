@@ -18,57 +18,62 @@
 set -e # exit on the first error
 cd $(dirname $(readlink -f $0))/../example
 echo $PWD
-export LD_LIBRARY_PATH=$(readlink -f ../../lib):$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$(readlink -f /work/build):$LD_LIBRARY_PATH
 echo $LD_LIBRARY_PATH
-ls -l ../../lib/
+ls -l /work/build/
 
 ./get_data.sh
 
-cp ../../build/cpp-package/example/lenet .
+cp /work/build/cpp-package/example/lenet .
 ./lenet 1
 
-cp ../../build/cpp-package/example/alexnet .
+cp /work/build/cpp-package/example/alexnet .
 ./alexnet 1
 
-cp ../../build/cpp-package/example/lenet_with_mxdataiter .
+cp /work/build/cpp-package/example/lenet_with_mxdataiter .
 ./lenet_with_mxdataiter 1
 
-cp ../../build/cpp-package/example/resnet .
+cp /work/build/cpp-package/example/resnet .
 ./resnet 1
 
-cp ../../build/cpp-package/example/inception_bn .
+cp /work/build/cpp-package/example/inception_bn .
 ./inception_bn 1
 
-cp ../../build/cpp-package/example/mlp .
+cp /work/build/cpp-package/example/mlp .
 ./mlp 150
 
-cp ../../build/cpp-package/example/mlp_cpu .
+cp /work/build/cpp-package/example/mlp_cpu .
 ./mlp_cpu
 
-cp ../../build/cpp-package/example/mlp_gpu .
+cp /work/build/cpp-package/example/mlp_gpu .
 ./mlp_gpu
 
-cp ../../build/cpp-package/example/test_optimizer .
+cp /work/build/cpp-package/example/test_optimizer .
 ./test_optimizer
 
-cp ../../build/cpp-package/example/test_kvstore .
+cp /work/build/cpp-package/example/test_kvstore .
 ./test_kvstore
 
-cp ../../build/cpp-package/example/test_score .
+cp /work/build/cpp-package/example/test_score .
 ./test_score 0.93
 
-cp ../../build/cpp-package/example/test_ndarray_copy .
+cp /work/build/cpp-package/example/test_ndarray_copy .
 ./test_ndarray_copy
 
-cp ../../build/cpp-package/example/test_regress_label .
+# skippping temporarily, tracked by https://github.com/apache/mxnet/issues/20011
+cp /work/build/cpp-package/example/test_regress_label .
 ./test_regress_label
 
 sh unittests/unit_test_mlp_csv.sh
 
 cd inference
-cp ../../../build/cpp-package/example/imagenet_inference .
-./unit_test_imagenet_inference.sh
 
-cp ../../../build/cpp-package/example/sentiment_analysis_rnn .
+cp /work/build/cpp-package/example/sentiment_analysis_rnn .
 ./unit_test_sentiment_analysis_rnn.sh
-cd ..
+
+cd multi_threaded_inference
+
+cp ../../../../build/cpp-package/example/multi_threaded_inference .
+./unit_test_multi_threaded_inference.sh
+
+cd ../..

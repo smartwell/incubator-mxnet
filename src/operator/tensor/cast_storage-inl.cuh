@@ -18,7 +18,6 @@
  */
 
 /*!
- *  Copyright (c) 2017 by Contributors
  * \file cast_storage-inl.cuh
  * \brief GPU implementation of cast_storage op
  */
@@ -93,8 +92,8 @@ void CastStorageDnsRspGPUImpl_(const OpContext& ctx,
     LOG(FATAL) << "CastStorageDnsRspImpl GPU kernels expect warpSize=32";
   }
   // Determine temporary device storage requirements
-  dim_t *row_flg = NULL;
-  void *d_temp_storage = NULL;
+  dim_t *row_flg = nullptr;
+  void *d_temp_storage = nullptr;
   size_t temp_storage_bytes = 0;
   cub::DeviceScan::InclusiveSum(d_temp_storage,
                                 temp_storage_bytes,
@@ -162,7 +161,9 @@ void CastStorageDnsRspGPUImpl_(const OpContext& ctx,
 
   // Get total number of non-zero rows from device
   dim_t nnr = 0;
-  CUDA_CALL(cudaMemcpy(&nnr, &row_flg[num_rows - 1], sizeof(dim_t), cudaMemcpyDeviceToHost));
+  CUDA_CALL(cudaMemcpyAsync(&nnr, &row_flg[num_rows - 1], sizeof(dim_t),
+                            cudaMemcpyDeviceToHost, mshadow::Stream<gpu>::GetStream(s)));
+  CUDA_CALL(cudaStreamSynchronize(mshadow::Stream<gpu>::GetStream(s)));
 
   // Allocate rsp tensor row index array and fill
   rsp->CheckAndAllocAuxData(rowsparse::kIdx, Shape1(nnr));
@@ -529,7 +530,7 @@ inline void CastStorageDnsCsrImpl(const OpContext& ctx,
         }
 
         // Determine temporary device storage requirements
-        void *d_temp_storage = NULL;
+        void *d_temp_storage = nullptr;
         size_t temp_storage_bytes = 0;
         cub::DeviceScan::InclusiveSum(d_temp_storage,
                                       temp_storage_bytes,
@@ -555,7 +556,9 @@ inline void CastStorageDnsCsrImpl(const OpContext& ctx,
 
         // Receive total number of nnz values from device
         IType nnz = 0;
-        CUDA_CALL(cudaMemcpy(&nnz, &(indptr[num_rows]), sizeof(IType), cudaMemcpyDeviceToHost));
+        CUDA_CALL(cudaMemcpyAsync(&nnz, &(indptr[num_rows]), sizeof(IType), cudaMemcpyDeviceToHost,
+                                  mshadow::Stream<gpu>::GetStream(s)));
+        CUDA_CALL(cudaStreamSynchronize(mshadow::Stream<gpu>::GetStream(s)));
 
         // Allocate column index array and data array of the csr matrix
         csr->CheckAndAllocAuxData(csr::kIdx, Shape1(static_cast<dim_t>(nnz)));

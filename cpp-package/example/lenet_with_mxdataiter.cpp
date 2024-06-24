@@ -81,14 +81,14 @@ int main(int argc, char const *argv[]) {
   int W = 28;
   int H = 28;
   int batch_size = 128;
-  int max_epoch = argc > 1 ? strtol(argv[1], NULL, 10) : 100;
+  int max_epoch = argc > 1 ? strtol(argv[1], nullptr, 10) : 100;
   float learning_rate = 1e-4;
   float weight_decay = 1e-4;
 
   auto dev_ctx = Context::cpu();
   int num_gpu;
   MXGetGPUCount(&num_gpu);
-#if !MXNET_USE_CPU
+#if MXNET_USE_CUDA
   if (num_gpu > 0) {
     dev_ctx = Context::gpu();
   }

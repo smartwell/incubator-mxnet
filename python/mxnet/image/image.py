@@ -19,7 +19,6 @@
 # pylint: disable=too-many-arguments, too-many-locals, no-name-in-module, too-many-branches, too-many-statements
 """Read individual image files and perform augmentations."""
 
-from __future__ import absolute_import, print_function
 
 import sys
 import os
@@ -27,7 +26,12 @@ import random
 import logging
 import json
 import warnings
+
+from numbers import Number
+
 import numpy as np
+
+from .. import numpy as _mx_np  # pylint: disable=reimported
 
 
 try:
@@ -40,6 +44,8 @@ from .. import ndarray as nd
 from ..ndarray import _internal
 from .. import io
 from .. import recordio
+from .. util import is_np_array
+from ..ndarray.numpy import _internal as _npi
 
 
 def imread(filename, *args, **kwargs):
@@ -80,7 +86,11 @@ def imread(filename, *args, **kwargs):
     >>> mx.img.imread("flower.jpg", to_rgb=0)
     <NDArray 224x224x3 @cpu(0)>
     """
-    return _internal._cvimread(filename, *args, **kwargs)
+    if is_np_array():
+        read_fn = _npi.cvimread
+    else:
+        read_fn = _internal._cvimread
+    return read_fn(filename, *args, **kwargs)
 
 
 def imresize(src, w, h, *args, **kwargs):
@@ -137,7 +147,8 @@ def imresize(src, w, h, *args, **kwargs):
     >>> new_image
     <NDArray 240x360x3 @cpu(0)>
     """
-    return _internal._cvimresize(src, w, h, *args, **kwargs)
+    resize_fn = _npi.cvimresize if is_np_array() else _internal._cvimresize
+    return resize_fn(src, w, h, *args, **kwargs)
 
 
 def imdecode(buf, *args, **kwargs):
@@ -190,12 +201,14 @@ def imdecode(buf, *args, **kwargs):
     <NDArray 224x224x3 @cpu(0)>
     """
     if not isinstance(buf, nd.NDArray):
-        if sys.version_info[0] == 3 and not isinstance(buf, (bytes, bytearray, np.ndarray)):
+        if not isinstance(buf, (bytes, bytearray, np.ndarray)):
             raise ValueError('buf must be of type bytes, bytearray or numpy.ndarray,'
                              'if you would like to input type str, please convert to bytes')
-        buf = nd.array(np.frombuffer(buf, dtype=np.uint8), dtype=np.uint8)
+        array_fn = _mx_np.array if is_np_array() else nd.array
+        buf = array_fn(np.frombuffer(buf, dtype=np.uint8), dtype=np.uint8)
 
-    return _internal._cvimdecode(buf, *args, **kwargs)
+    cvimdecode = _npi.cvimdecode if is_np_array() else _internal._cvimdecode
+    return cvimdecode(buf, *args, **kwargs)
 
 
 def scale_down(src_size, size):
@@ -299,11 +312,11 @@ def _get_interp_method(interp, sizes=()):
         Possible values:
         0: Nearest Neighbors Interpolation.
         1: Bilinear interpolation.
-        2: Area-based (resampling using pixel area relation). It may be a
+        2: Bicubic interpolation over 4x4 pixel neighborhood.
+        3: Area-based (resampling using pixel area relation). It may be a
         preferred method for image decimation, as it gives moire-free
         results. But when the image is zoomed, it is similar to the Nearest
         Neighbors method. (used by default).
-        3: Bicubic interpolation over 4x4 pixel neighborhood.
         4: Lanczos interpolation over 8x8 pixel neighborhood.
         9: Cubic for enlarge, area for shrink, bilinear for others
         10: Random select from interpolation method metioned above.
@@ -337,7 +350,7 @@ def _get_interp_method(interp, sizes=()):
     if interp == 10:
         return random.randint(0, 4)
     if interp not in (0, 1, 2, 3, 4):
-        raise ValueError('Unknown interp method %d' % interp)
+        raise ValueError(f'Unknown interp method {interp}')
     return interp
 
 
@@ -362,11 +375,11 @@ def resize_short(src, size, interp=2):
         Possible values:
         0: Nearest Neighbors Interpolation.
         1: Bilinear interpolation.
-        2: Area-based (resampling using pixel area relation). It may be a
+        2: Bicubic interpolation over 4x4 pixel neighborhood.
+        3: Area-based (resampling using pixel area relation). It may be a
         preferred method for image decimation, as it gives moire-free
         results. But when the image is zoomed, it is similar to the Nearest
         Neighbors method. (used by default).
-        3: Bicubic interpolation over 4x4 pixel neighborhood.
         4: Lanczos interpolation over 8x8 pixel neighborhood.
         9: Cubic for enlarge, area for shrink, bilinear for others
         10: Random select from interpolation method metioned above.
@@ -600,6 +613,149 @@ def random_size_crop(src, size, area, ratio, interp=2, **kwargs):
 
     # fall back to center_crop
     return center_crop(src, size, interp)
+
+
+def imrotate(src, rotation_degrees, zoom_in=False, zoom_out=False):
+    """Rotates the input image(s) of a specific rotation degree.
+
+    Parameters
+    ----------
+    src : NDArray
+        Input image (format CHW) or batch of images (format NCHW),
+        in both case is required a float32 data type.
+    rotation_degrees: scalar or NDArray
+        Wanted rotation in degrees. In case of `src` being a single image
+        a scalar is needed, otherwise a mono-dimensional vector of angles
+        or a scalar.
+    zoom_in: bool
+        If True input image(s) will be zoomed in a way so that no padding
+        will be shown in the output result.
+    zoom_out: bool
+        If True input image(s) will be zoomed in a way so that the whole
+        original image will be contained in the output result.
+    Returns
+    -------
+    NDArray
+        An `NDArray` containing the rotated image(s).
+    """
+    if zoom_in and zoom_out:
+        raise ValueError("`zoom_in` and `zoom_out` cannot be both True")
+    if np.dtype(src.dtype) is not np.dtype(np.float32):
+        raise TypeError("Only `float32` images are supported by this function")
+    # handles the case in which a single image is passed to this function
+    expanded = False
+    if src.ndim == 3:
+        expanded = True
+        src = _mx_np.expand_dims(src, 0) if is_np_array() else src.expand_dims(axis=0)
+        if not isinstance(rotation_degrees, Number):
+            raise TypeError("When a single image is passed the rotation angle is "
+                            "required to be a scalar.")
+    elif src.ndim != 4:
+        raise ValueError("Only 3D and 4D are supported by this function")
+
+    # when a scalar is passed we wrap it into an array
+    if isinstance(rotation_degrees, Number):
+        rotation_degrees = nd.array([rotation_degrees] * len(src),
+                                    ctx=src.ctx)
+
+    if len(src) != len(rotation_degrees):
+        raise ValueError(
+            "The number of images must be equal to the number of rotation angles"
+        )
+
+    rotation_degrees = rotation_degrees.as_in_context(src.ctx)
+    rotation_rad = np.pi * rotation_degrees / 180
+    # reshape the rotations angle in order to be broadcasted
+    # over the `src` tensor
+    rotation_rad = rotation_rad.expand_dims(axis=1).expand_dims(axis=2)
+    _, _, h, w = src.shape
+
+    # Generate a grid centered at the center of the image
+    hscale = (float(h - 1) / 2)
+    wscale = (float(w - 1) / 2)
+    h_matrix = (
+        nd.repeat(nd.arange(h, ctx=src.ctx).astype('float32').reshape(h, 1), w, axis=1) - hscale
+    ).expand_dims(axis=0)
+    w_matrix = (
+        nd.repeat(nd.arange(w, ctx=src.ctx).astype('float32').reshape(1, w), h, axis=0) - wscale
+    ).expand_dims(axis=0)
+    # perform rotation on the grid
+    c_alpha = nd.cos(rotation_rad)
+    s_alpha = nd.sin(rotation_rad)
+    w_matrix_rot = w_matrix * c_alpha - h_matrix * s_alpha
+    h_matrix_rot = w_matrix * s_alpha + h_matrix * c_alpha
+    # NOTE: grid normalization must be performed after the rotation
+    #       to keep the aspec ratio
+    w_matrix_rot = w_matrix_rot / wscale
+    h_matrix_rot = h_matrix_rot / hscale
+
+    h, w = nd.array([h], ctx=src.ctx), nd.array([w], ctx=src.ctx)
+    # compute the scale factor in case `zoom_in` or `zoom_out` are True
+    if zoom_in or zoom_out:
+        rho_corner = nd.sqrt(h * h + w * w)
+        ang_corner = nd.arctan(h / w)
+        corner1_x_pos = nd.abs(rho_corner * nd.cos(ang_corner + nd.abs(rotation_rad)))
+        corner1_y_pos = nd.abs(rho_corner * nd.sin(ang_corner + nd.abs(rotation_rad)))
+        corner2_x_pos = nd.abs(rho_corner * nd.cos(ang_corner - nd.abs(rotation_rad)))
+        corner2_y_pos = nd.abs(rho_corner * nd.sin(ang_corner - nd.abs(rotation_rad)))
+        max_x = nd.maximum(corner1_x_pos, corner2_x_pos)
+        max_y = nd.maximum(corner1_y_pos, corner2_y_pos)
+        if zoom_out:
+            scale_x = max_x / w
+            scale_y = max_y / h
+            globalscale = nd.maximum(scale_x, scale_y)
+        else:
+            scale_x = w / max_x
+            scale_y = h / max_y
+            globalscale = nd.minimum(scale_x, scale_y)
+        globalscale = globalscale.expand_dims(axis=3)
+    else:
+        globalscale = 1
+    grid = nd.concat(w_matrix_rot.expand_dims(axis=1),
+                     h_matrix_rot.expand_dims(axis=1), dim=1)
+    grid = grid * globalscale
+    if is_np_array():
+        src = src.as_nd_ndarray()
+    rot_img = nd.BilinearSampler(src, grid)
+    if is_np_array():
+        rot_img = rot_img.as_np_ndarray()
+    if expanded:
+        return rot_img[0]
+    return rot_img
+
+
+def random_rotate(src, angle_limits, zoom_in=False, zoom_out=False):
+    """Random rotates `src` by an angle included in angle limits.
+
+    Parameters
+    ----------
+    src : NDArray
+        Input image (format CHW) or batch of images (format NCHW),
+        in both case is required a float32 data type.
+    angle_limits: tuple
+        Tuple of 2 elements containing the upper and lower limit
+        for rotation angles in degree.
+    zoom_in: bool
+        If True input image(s) will be zoomed in a way so that no padding
+        will be shown in the output result.
+    zoom_out: bool
+        If True input image(s) will be zoomed in a way so that the whole
+        original image will be contained in the output result.
+    Returns
+    -------
+    NDArray
+        An `NDArray` containing the rotated image(s).
+    """
+    if src.ndim == 3:
+        rotation_degrees = np.random.uniform(*angle_limits)
+    else:
+        n = src.shape[0]
+        rotation_degrees = nd.array(np.random.uniform(
+            *angle_limits,
+            size=n
+        ))
+    return imrotate(src, rotation_degrees,
+                    zoom_in=zoom_in, zoom_out=zoom_out)
 
 
 class Augmenter(object):
@@ -1052,11 +1208,11 @@ def CreateAugmenter(data_shape, resize=0, rand_crop=False, rand_resize=False, ra
         Possible values:
         0: Nearest Neighbors Interpolation.
         1: Bilinear interpolation.
-        2: Area-based (resampling using pixel area relation). It may be a
+        2: Bicubic interpolation over 4x4 pixel neighborhood.
+        3: Area-based (resampling using pixel area relation). It may be a
         preferred method for image decimation, as it gives moire-free
         results. But when the image is zoomed, it is similar to the Nearest
         Neighbors method. (used by default).
-        3: Bicubic interpolation over 4x4 pixel neighborhood.
         4: Lanczos interpolation over 8x8 pixel neighborhood.
         9: Cubic for enlarge, area for shrink, bilinear for others
         10: Random select from interpolation method metioned above.
@@ -1206,6 +1362,7 @@ class ImageIter(io.DataIter):
         else:
             self.imgrec = None
 
+        array_fn = _mx_np.array if is_np_array() else nd.array
         if path_imglist:
             logging.info('%s: loading image list %s...', class_name, path_imglist)
             with open(path_imglist) as fin:
@@ -1213,7 +1370,7 @@ class ImageIter(io.DataIter):
                 imgkeys = []
                 for line in iter(fin.readline, ''):
                     line = line.strip().split('\t')
-                    label = nd.array(line[1:-1], dtype=dtype)
+                    label = array_fn(line[1:-1], dtype=dtype)
                     key = int(line[0])
                     imglist[key] = (label, line[-1])
                     imgkeys.append(key)
@@ -1227,11 +1384,11 @@ class ImageIter(io.DataIter):
                 key = str(index)
                 index += 1
                 if len(img) > 2:
-                    label = nd.array(img[:-1], dtype=dtype)
+                    label = array_fn(img[:-1], dtype=dtype)
                 elif isinstance(img[0], numeric_types):
-                    label = nd.array([img[0]], dtype=dtype)
+                    label = array_fn([img[0]], dtype=dtype)
                 else:
-                    label = nd.array(img[0], dtype=dtype)
+                    label = array_fn(img[0], dtype=dtype)
                 result[key] = (label, img[-1])
                 imgkeys.append(str(key))
             self.imglist = result
@@ -1367,8 +1524,14 @@ class ImageIter(io.DataIter):
             i = self._cache_idx
             # clear the cache data
         else:
-            batch_data = nd.zeros((batch_size, c, h, w))
-            batch_label = nd.empty(self.provide_label[0][1])
+            if is_np_array():
+                zeros_fn = _mx_np.zeros
+                empty_fn = _mx_np.empty
+            else:
+                zeros_fn = nd.zeros
+                empty_fn = nd.empty
+            batch_data = zeros_fn((batch_size, c, h, w))
+            batch_label = empty_fn(self.provide_label[0][1])
             i = self._batchify(batch_data, batch_label)
         # calculate the padding
         pad = batch_size - i
@@ -1445,4 +1608,7 @@ class ImageIter(io.DataIter):
 
     def postprocess_data(self, datum):
         """Final postprocessing step before image is loaded into the batch."""
-        return nd.transpose(datum, axes=(2, 0, 1))
+        if is_np_array():
+            return datum.transpose(2, 0, 1)
+        else:
+            return nd.transpose(datum, axes=(2, 0, 1))

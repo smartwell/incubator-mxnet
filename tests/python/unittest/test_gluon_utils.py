@@ -17,7 +17,6 @@
 
 import io
 import os
-import tempfile
 import warnings
 import glob
 import shutil
@@ -29,7 +28,7 @@ except ImportError:
     import mock
 import mxnet as mx
 import requests
-from nose.tools import raises
+import pytest
 
 
 class MockResponse(requests.Response):
@@ -40,11 +39,11 @@ class MockResponse(requests.Response):
         self.raw = io.BytesIO(content.encode('utf-8'))
 
 
-@raises(Exception)
 @mock.patch(
     'requests.get', mock.Mock(side_effect=requests.exceptions.ConnectionError))
-def test_download_retries():
-    mx.gluon.utils.download("http://doesnotexist.notfound")
+def test_download_retries_error():
+    with pytest.raises(Exception):
+        mx.gluon.utils.download("http://doesnotexist.notfound")
 
 
 @mock.patch(
@@ -53,13 +52,13 @@ def test_download_retries():
 def _download_successful(tmp):
     """ internal use for testing download successfully """
     mx.gluon.utils.download(
-        "https://raw.githubusercontent.com/apache/incubator-mxnet/master/README.md",
+        "https://raw.githubusercontent.com/apache/mxnet/master/README.md",
         path=tmp)
 
 
-def test_download_successful():
+def test_download_successful(tmpdir):
     """ test download with one process """
-    tmp = tempfile.mkdtemp()
+    tmp = str(tmpdir)
     tmpfile = os.path.join(tmp, 'README.md')
     _download_successful(tmpfile)
     assert os.path.getsize(tmpfile) > 100, os.path.getsize(tmpfile)
@@ -70,9 +69,9 @@ def test_download_successful():
     shutil.rmtree(tmp)
 
 
-def test_multiprocessing_download_successful():
+def test_multiprocessing_download_successful(tmpdir):
     """ test download with multiprocessing """
-    tmp = tempfile.mkdtemp()
+    tmp = str(tmpdir)
     tmpfile = os.path.join(tmp, 'README.md')
     process_list = []
     # test it with 10 processes
@@ -98,7 +97,7 @@ def test_download_ssl_verify():
     """ test download verify_ssl parameter """
     with warnings.catch_warnings(record=True) as warnings_:
         mx.gluon.utils.download(
-            "https://mxnet.incubator.apache.org/index.html", verify_ssl=False)
+            "https://mxnet.apache.org/index.html", verify_ssl=False)
     assert any(
         str(w.message).startswith('Unverified HTTPS request')
         for w in warnings_)

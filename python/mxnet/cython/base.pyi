@@ -1,14 +1,36 @@
-from ..base import MXNetError
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+
+#   http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+
+from ..base import get_last_ffi_error
 
 from libcpp.vector cimport vector
 from libcpp.string cimport string
+from libcpp cimport bool as _bool
 from cpython.version cimport PY_MAJOR_VERSION
 
 ctypedef void* SymbolHandle
 ctypedef void* NDArrayHandle
 ctypedef void* OpHandle
 ctypedef void* CachedOpHandle
+ctypedef void* MonitorCallbackHandle
 ctypedef unsigned nn_uint
+ctypedef void (*CachedOpMonitorCallback)(const char*,
+                                         const char*,
+                                         NDArrayHandle)
 
 cdef py_str(const char* x):
     if PY_MAJOR_VERSION < 3:
@@ -33,7 +55,7 @@ cdef c_str(pystr):
 
 cdef CALL(int ret):
     if ret != 0:
-        raise MXNetError(NNGetLastError())
+        raise get_last_ffi_error()
 
 
 cdef const char** CBeginPtr(vector[const char*]& vec):
@@ -63,6 +85,8 @@ cdef extern from "nnvm/c_api.h":
                     const char ***arg_descriptions,
                     const char **return_type);
     int NNSymbolFree(SymbolHandle symbol);
+    int NNSymbolGetNumOutputs(SymbolHandle sym,
+                              nn_uint* output_count);
     int NNSymbolCompose(SymbolHandle sym,
                         const char* name,
                         nn_uint num_args,
@@ -90,25 +114,13 @@ cdef extern from "mxnet/c_api.h":
     int MXSymbolSetAttr(SymbolHandle symbol,
                         const char* key,
                         const char* value);
-    int MXImperativeInvokeEx(OpHandle creator,
-                             int num_inputs,
-                             NDArrayHandle *inputs,
-                             int *num_outputs,
-                             NDArrayHandle **outputs,
-                             int num_params,
-                             const char **param_keys,
-                             const char **param_vals,
-                             const int **out_stypes);
-    int MXNDArrayFree(NDArrayHandle handle);
-    int MXCreateCachedOpEx(SymbolHandle handle,
-                            int num_flags,
-                            const char** keys,
-                            const char** vals,
-                            CachedOpHandle *out);
-    int MXFreeCachedOp(CachedOpHandle handle);
-    int MXInvokeCachedOpEx(CachedOpHandle handle,
+    int MXImperativeInvoke(OpHandle creator,
                            int num_inputs,
                            NDArrayHandle *inputs,
                            int *num_outputs,
                            NDArrayHandle **outputs,
+                           int num_params,
+                           const char **param_keys,
+                           const char **param_vals,
                            const int **out_stypes);
+    int MXNDArrayFree(NDArrayHandle handle);

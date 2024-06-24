@@ -18,12 +18,15 @@
 # coding: utf-8
 # pylint: disable= arguments-differ
 """Basic neural network layers."""
-__all__ = ['Activation', 'LeakyReLU', 'PReLU', 'ELU', 'SELU', 'Swish', 'GELU']
+__all__ = ['Activation', 'LeakyReLU', 'PReLU', 'ELU', 'SELU', 'Swish', 'GELU', 'SiLU']
 
-from ... import initializer
+from ... import initializer, npx
 from ..block import HybridBlock
+from ..parameter import Parameter
+from ...util import use_np
 
 
+@use_np
 class Activation(HybridBlock):
     r"""Applies an activation function to input.
 
@@ -47,8 +50,8 @@ class Activation(HybridBlock):
     def _alias(self):
         return self._act_type
 
-    def hybrid_forward(self, F, x):
-        return F.Activation(x, act_type=self._act_type, name='fwd')
+    def forward(self, x):
+        return npx.activation(x, act_type=self._act_type, name='fwd')
 
     def __repr__(self):
         s = '{name}({_act_type})'
@@ -56,6 +59,7 @@ class Activation(HybridBlock):
                         **self.__dict__)
 
 
+@use_np
 class LeakyReLU(HybridBlock):
     r"""Leaky version of a Rectified Linear Unit.
 
@@ -87,8 +91,8 @@ class LeakyReLU(HybridBlock):
         super(LeakyReLU, self).__init__(**kwargs)
         self._alpha = alpha
 
-    def hybrid_forward(self, F, x):
-        return F.LeakyReLU(x, act_type='leaky', slope=self._alpha, name='fwd')
+    def forward(self, x):
+        return npx.leaky_relu(x, act_type='leaky', slope=self._alpha, name='fwd')
 
     def __repr__(self):
         s = '{name}({alpha})'
@@ -96,6 +100,7 @@ class LeakyReLU(HybridBlock):
                         alpha=self._alpha)
 
 
+@use_np
 class PReLU(HybridBlock):
     r"""Parametric leaky version of a Rectified Linear Unit.
     <https://arxiv.org/abs/1502.01852>`_ paper.
@@ -117,7 +122,10 @@ class PReLU(HybridBlock):
     ----------
     alpha_initializer : Initializer
         Initializer for the `embeddings` matrix.
-
+    in_channels : int, default 1
+        Number of channels (alpha parameters) to learn. Can either be 1
+        or `n` where `n` is the size of the second dimension of the input
+        tensor.
 
     Inputs:
         - **data**: input tensor with arbitrary shape.
@@ -125,15 +133,17 @@ class PReLU(HybridBlock):
     Outputs:
         - **out**: output tensor with the same shape as `data`.
     """
-    def __init__(self, alpha_initializer=initializer.Constant(0.25), **kwargs):
+    def __init__(self, alpha_initializer=initializer.Constant(0.25),
+                 in_channels=1, **kwargs):
         super(PReLU, self).__init__(**kwargs)
-        with self.name_scope():
-            self.alpha = self.params.get('alpha', shape=(1,), init=alpha_initializer)
+        self.alpha = Parameter('alpha', shape=(in_channels,), init=alpha_initializer)
 
-    def hybrid_forward(self, F, x, alpha):
-        return F.LeakyReLU(x, gamma=alpha, act_type='prelu', name='fwd')
+    def forward(self, x):
+        device = x.device
+        return npx.leaky_relu(x, gamma=self.alpha.data(device), act_type='prelu', name='fwd')
 
 
+@use_np
 class ELU(HybridBlock):
     r"""
     Exponential Linear Unit (ELU)
@@ -158,10 +168,11 @@ class ELU(HybridBlock):
         super(ELU, self).__init__(**kwargs)
         self._alpha = alpha
 
-    def hybrid_forward(self, F, x):
-        return F.LeakyReLU(x, act_type='elu', slope=self._alpha)
+    def forward(self, x):
+        return npx.leaky_relu(x, act_type='elu', slope=self._alpha)
 
 
+@use_np
 class SELU(HybridBlock):
     r"""
     Scaled Exponential Linear Unit (SELU)
@@ -178,15 +189,21 @@ class SELU(HybridBlock):
     def __init__(self, **kwargs):
         super(SELU, self).__init__(**kwargs)
 
-    def hybrid_forward(self, F, x):
-        return F.LeakyReLU(x, act_type='selu', name='fwd')
+    def forward(self, x):
+        return npx.leaky_relu(x, act_type='selu', name='fwd')
 
+
+@use_np
 class GELU(HybridBlock):
     r"""
     Gaussian Exponential Linear Unit (GELU)
         "Gaussian Error Linear Units (GELUs)", Hendrycks et al, 2016
         https://arxiv.org/abs/1606.08415
 
+    Parameters
+    ----------
+    approximation : string
+        Which approximation of GELU calculation to use (erf or tanh).
 
     Inputs:
         - **data**: input tensor with arbitrary shape.
@@ -194,16 +211,21 @@ class GELU(HybridBlock):
     Outputs:
         - **out**: output tensor with the same shape as `data`.
     """
-    def __init__(self, **kwargs):
+    def __init__(self, approximation='erf', **kwargs):
+        if approximation not in ['erf', 'tanh']:
+            raise ValueError("Unsupported approximation! Supported values are 'erf' and 'tanh', "
+                             "but got '{}'".format(approximation))
+        self._act_algorithm = 'gelu_' + approximation
         super(GELU, self).__init__(**kwargs)
 
-    def hybrid_forward(self, F, x):
-        return F.LeakyReLU(x, act_type='gelu', name='fwd')
+    def forward(self, x):
+        return npx.leaky_relu(x, act_type=self._act_algorithm, name='fwd')
 
 
+@use_np
 class Swish(HybridBlock):
     r"""
-    Swish Activation function
+    Swish Activation function (SiLU with a hyperparameter)
         https://arxiv.org/pdf/1710.05941.pdf
 
     Parameters
@@ -223,5 +245,32 @@ class Swish(HybridBlock):
         super(Swish, self).__init__(**kwargs)
         self._beta = beta
 
-    def hybrid_forward(self, F, x):
-        return x * F.sigmoid(self._beta * x, name='fwd')
+    def forward(self, x):
+        return x * npx.sigmoid(self._beta * x)
+
+
+@use_np
+class SiLU(HybridBlock):
+    r"""
+    Sigmoid Linear Units
+        Originally proposed "Gaussian Error Linear Units (GELUs)", Hendrycks et al, 2016
+        https://arxiv.org/abs/1606.08415
+
+    Parameters
+    ----------
+    beta : float
+        silu(x) = x * sigmoid(x)
+
+
+    Inputs:
+        - **data**: input tensor with arbitrary shape.
+
+    Outputs:
+        - **out**: output tensor with the same shape as `data`.
+    """
+
+    def __init__(self, **kwargs):
+        super(SiLU, self).__init__(**kwargs)
+
+    def forward(self, x):
+        return x * npx.sigmoid(x)
